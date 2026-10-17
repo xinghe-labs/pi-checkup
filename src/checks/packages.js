@@ -7,7 +7,7 @@
 // never committed.
 import path from "node:path";
 import fs from "node:fs";
-import { globExists, readJson, resolvePackageDir, sourceOf } from "../util.js";
+import { globExists, makeRow, readJson, resolvePackageDir, sourceOf } from "../util.js";
 
 export const group = "Packages";
 
@@ -87,8 +87,7 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 	}
 
 	const preview = (list, n) => list.slice(0, n).join(", ") + (list.length > n ? ", ..." : "");
-	/** One finding row, so the checks below stay flat and readable. */
-	const row = (id, title, status, detail, extra = {}) => ({ group, id, title, status, detail, ...extra });
+	const row = makeRow(group);
 
 	// --- package directories -----------------------------------------------
 	// The prune repair is only safe when settings came from the file the repair

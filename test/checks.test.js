@@ -168,12 +168,11 @@ test("config: a set env var is not reported", async () => {
 	writeJson(path.join(root, "models.json"), {
 		providers: { p: { baseUrl: "https://example.test/v1", apiKey: "$CHECKUP_DEFINITELY_SET" } },
 	});
-	process.env.CHECKUP_DEFINITELY_SET = "1";
+	const env = { ...process.env, CHECKUP_DEFINITELY_SET: "1" };
 	try {
-		const rows = byId(await config.run(buildContext({ agentDir: root })));
+		const rows = byId(await config.run(buildContext({ agentDir: root, env })));
 		assert.equal(rows.env.status, "ok");
 	} finally {
-		delete process.env.CHECKUP_DEFINITELY_SET;
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
@@ -246,16 +245,16 @@ test("binaries: shadowing is only reported for commands a package advertises", a
 	installPkg(root, "owner", { bin: { "checkup-owntool": "./cli.js" }, pi: { extensions: ["./i.js"] } });
 	writeJson(path.join(root, "settings.json"), { packages: ["npm:owner"] });
 
-	const saved = process.env.PATH;
-	process.env.PATH = [shadowDir, binDir, saved].filter(Boolean).join(path.delimiter);
+	// The PATH the check sees comes from the context, so this test describes a
+	// shadowed command without changing the PATH of the suite running it.
+	const env = { ...process.env, PATH: [shadowDir, binDir, process.env.PATH].filter(Boolean).join(path.delimiter) };
 	try {
-		const rows = byId(await binaries.run(buildContext({ agentDir: root })));
+		const rows = byId(await binaries.run(buildContext({ agentDir: root, env })));
 		assert.equal(rows.shadowed.status, "warn");
 		assert.match(rows.shadowed.detail, /checkup-owntool/);
 		// Not declared by any package, so it is not the user's problem.
 		assert.doesNotMatch(rows.shadowed.detail, /checkup-othertool/);
 	} finally {
-		process.env.PATH = saved;
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
@@ -504,17 +503,12 @@ test("config: an exported but empty variable counts as unset", async () => {
 	const root = tmpRoot();
 	writeJson(path.join(root, "settings.json"), { packages: [] });
 	writeJson(path.join(root, "models.json"), { providers: { p: { apiKey: "$PI_CHECKUP_EMPTY_VAR" } } });
-	const saved = process.env.PI_CHECKUP_EMPTY_VAR;
-	process.env.PI_CHECKUP_EMPTY_VAR = "";
-	try {
-		const rows = byId(await config.run(buildContext({ agentDir: root })));
-		// An empty string cannot authenticate anything, so it must not read as set.
-		assert.equal(rows.env.status, "warn");
-		assert.match(rows.env.detail, /PI_CHECKUP_EMPTY_VAR/);
-	} finally {
-		if (saved === undefined) delete process.env.PI_CHECKUP_EMPTY_VAR;
-		else process.env.PI_CHECKUP_EMPTY_VAR = saved;
-	}
+	// Exported but empty: the variable exists in the environment and still cannot
+	// authenticate anything.
+	const env = { ...process.env, PI_CHECKUP_EMPTY_VAR: "" };
+	const rows = byId(await config.run(buildContext({ agentDir: root, env })));
+	assert.equal(rows.env.status, "warn");
+	assert.match(rows.env.detail, /PI_CHECKUP_EMPTY_VAR/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 

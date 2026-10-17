@@ -26,6 +26,14 @@ export function agentDir() {
 	return process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
 }
 
+/**
+ * One finding row. Every module builds rows the same shape, and four of them used
+ * to carry their own copy of this one-liner.
+ */
+export function makeRow(group) {
+	return (id, title, status, detail, extra = {}) => ({ group, id, title, status, detail, ...extra });
+}
+
 /** Run a command without blocking the event loop. Never throws. */
 export async function sh(cmd, args, timeout = TIMEOUT_MS) {
 	try {
@@ -57,9 +65,9 @@ export async function sh(cmd, args, timeout = TIMEOUT_MS) {
  * subprocess per binary inspected (a package with a dozen commands was costing a
  * dozen spawns), and it still answers on images that ship no `which` at all.
  */
-export function whichAll(name) {
-	const exts = isWindows ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean) : [""];
-	const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+export function whichAll(name, env = process.env) {
+	const exts = isWindows ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean) : [""];
+	const dirs = (env.PATH ?? "").split(path.delimiter).filter(Boolean);
 	const hits = [];
 	for (const dir of dirs) {
 		for (const ext of exts) {

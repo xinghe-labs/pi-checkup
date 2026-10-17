@@ -2,7 +2,7 @@
 // entries that silently cancel each other out?
 import fs from "node:fs";
 import path from "node:path";
-import { exists, newestBackup, readJson, sourceOf } from "../util.js";
+import { exists, makeRow, newestBackup, readJson, sourceOf } from "../util.js";
 
 export const group = "Config";
 
@@ -30,10 +30,19 @@ function interpolatedFields(models) {
 	return out;
 }
 
-export async function run({ cwd, agentDir: root, settingsFile, modelsFile, settings, settingsSource, hasRuntime, env = process.env }) {
+export async function run({
+	cwd,
+	agentDir: root,
+	settingsFile,
+	modelsFile,
+	projectSettingsFile = path.join(cwd ?? process.cwd(), ".pi", "settings.json"),
+	settings,
+	settingsSource,
+	hasRuntime,
+	env = process.env,
+}) {
 	const results = [];
-	/** One finding row, so the checks below stay flat and readable. */
-	const row = (id, title, status, detail, extra = {}) => ({ group, id, title, status, detail, ...extra });
+	const row = makeRow(group);
 	// The CLI cannot run a slash command, so a hint that names one is useless to
 	// the exact reader the CLI exists for: someone whose Pi will not boot.
 	const fixCommand = hasRuntime ? "/checkup fix" : "npx pi-checkup --fix --yes";
@@ -41,7 +50,7 @@ export async function run({ cwd, agentDir: root, settingsFile, modelsFile, setti
 	const files = [
 		{ label: "settings.json", file: settingsFile, required: true },
 		{ label: "models.json", file: modelsFile, required: false },
-		{ label: "project settings", file: path.join(cwd, ".pi", "settings.json"), required: false },
+		{ label: "project settings", file: projectSettingsFile, required: false },
 	];
 
 	// --- validity ----------------------------------------------------------

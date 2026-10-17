@@ -239,6 +239,7 @@ Being explicit about what this cannot see:
 ```bash
 git clone https://github.com/xinghe-labs/pi-checkup
 cd pi-checkup
+npm run lint         # node --check over every source file
 node --test          # 77 tests, no Pi session needed
 ```
 

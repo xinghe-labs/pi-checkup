@@ -42,6 +42,11 @@ export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride,
 		agentDir: root,
 		settingsFile,
 		modelsFile,
+		// The two paths a check would otherwise rebuild itself. Deriving them here
+		// keeps the agent layout in one place and lets a test describe a project
+		// config or a .bin directory without touching the real tree.
+		projectSettingsFile: path.join(cwd ?? process.cwd(), ".pi", "settings.json"),
+		binDir: path.join(root, "npm", "node_modules", ".bin"),
 		settings,
 		settingsSource,
 		hasRuntime,

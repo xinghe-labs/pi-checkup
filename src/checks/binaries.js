@@ -78,8 +78,8 @@ function declaredBins(settings, root) {
 	return names;
 }
 
-export async function run({ settings, agentDir: root }) {
-	const binDir = path.join(root, "npm", "node_modules", ".bin");
+export async function run({ settings, agentDir: root, binDir = path.join(root, "npm", "node_modules", ".bin"), env = process.env }) {
+
 	if (!exists(binDir)) {
 		// An unreadable .bin is not an empty one. Saying "no npm packages
 		// installed" for an EACCES sends the user looking in the wrong place.
@@ -161,7 +161,7 @@ export async function run({ settings, agentDir: root }) {
 		// Both findings below are about commands a Pi package advertises. A
 		// transitive dev dependency that happens to be shadowed is not the user's
 		// problem and reporting it made a healthy install look broken forever.
-		const hits = whichAll(entry);
+		const hits = whichAll(entry, env);
 		if (!hits.length) {
 			// A missing shim is already reported above with a better hint; listing it
 			// here too would double-count the same root cause.

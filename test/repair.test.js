@@ -130,6 +130,12 @@ test("buildContext falls back to the settings file without a session", () => {
 	// proxy without mutating process.env.
 	assert.equal(ctx.env, process.env);
 	assert.deepEqual(buildContext({ agentDir: root, env: { https_proxy: "x" } }).env, { https_proxy: "x" });
+	// The two paths a check would otherwise rebuild itself come from the context,
+	// so the agent layout lives in one place and a test can point a check at a
+	// project config without touching the real tree.
+	const derived = buildContext({ agentDir: root, cwd: path.join(root, "proj") });
+	assert.equal(derived.projectSettingsFile, path.join(root, "proj", ".pi", "settings.json"));
+	assert.equal(derived.binDir, path.join(root, "npm", "node_modules", ".bin"));
 	fs.rmSync(root, { recursive: true, force: true });
 });
 

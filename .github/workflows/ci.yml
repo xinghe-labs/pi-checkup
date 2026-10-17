@@ -19,9 +19,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Syntax check every source file
-        shell: bash
-        run: |
-          for f in $(find src bin test -name '*.js'); do node --check "$f"; done
+        run: npm run lint
       - name: Unit tests
         run: node --test
       - name: CLI smoke test
@@ -72,7 +70,11 @@ jobs:
           console.log('manifest ok');
           "
       - name: Packed tarball contains the entry point
+        shell: bash
         run: |
+          # pipefail: without it the pipeline reports tee's status and a failed
+          # pack would sail through to the greps.
+          set -o pipefail
           npm pack --dry-run 2>&1 | tee pack.log
           grep -q 'src/index.js' pack.log
           grep -q 'bin/checkup.js' pack.log
