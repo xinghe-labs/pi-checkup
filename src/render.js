@@ -93,7 +93,11 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 	// longer than the cap gets its detail on its own line rather than shoving it
 	// past the column every wrapped continuation line uses.
 	const titleWidth = Math.min(22, Math.max(8, ...results.map((r) => r.title.length)));
-	const detailColumn = 4 + titleWidth + 1;
+	// Below this width the title column plus one word of detail leaves a gutter
+	// too narrow to read ("package dirs 2 missing from" then two words a line), so
+	// the detail moves under the title instead of beside it.
+	const stacked = width < 56;
+	const detailColumn = stacked ? 6 : 4 + titleWidth + 1;
 
 	const lines = [];
 	for (const g of groups) {
@@ -101,7 +105,7 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 		for (const r of byGroup.get(g)) {
 			const mark = `  ${MARKS[r.status] ?? "?"} `;
 			const title = r.title.padEnd(titleWidth);
-			if (r.title.length > titleWidth) {
+			if (stacked || r.title.length > titleWidth) {
 				// The title gets the same treatment as the detail: a name that does not
 				// fit would otherwise set the width for the whole report.
 				const titleParts = wrapText(r.title, width, mark.length);

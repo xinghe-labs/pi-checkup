@@ -438,6 +438,21 @@ test("redactSource hides userinfo even when the source has no slashes", () => {
 	assert.equal(redactSource("git@github.com:me/x"), "git@github.com:me/x");
 });
 
+test("renderReport stacks the detail under the title on a narrow terminal", () => {
+	// At 40 columns the title column plus one word of detail left a gutter two
+	// words wide, and the row read as one run-on sentence.
+	const rows = [
+		{ group: "Packages", id: "dirs", title: "package dirs", status: "warn", detail: "2 missing from node_modules: npm:a, npm:b", hint: "Run pi install." },
+	];
+	const narrow = renderReport(rows, { verbose: true, width: 40 });
+	const lines = narrow.split("\n").filter(Boolean);
+	assert.ok(lines.every((line) => line.length <= 40), narrow);
+	assert.match(narrow, /package dirs\n {6}2 missing/);
+	// The default layout is unchanged: the detail still starts on the title line.
+	const wide = renderReport(rows, { verbose: true, width: 80 });
+	assert.match(wide, /package dirs 2 missing from node_modules/);
+});
+
 test("truncateList says how much it left out", () => {
 	assert.equal(truncateList(["a", "b"], 3), "a, b");
 	assert.equal(truncateList(["a", "b", "c", "d"], 2), "a, b, ... 2 more");
