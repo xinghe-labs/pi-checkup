@@ -109,7 +109,12 @@ async function main() {
 		return results.some((r) => r.status === "fail") ? 1 : 0;
 	}
 
-	const report = renderReport(results, { verbose: opts.verbose, hintCommand: "pi-checkup --verbose" });
+	const report = renderReport(results, {
+		verbose: opts.verbose,
+		hintCommand: "pi-checkup --verbose",
+		// Piped output has no columns; the renderer's default keeps logs stable.
+		width: process.stdout.isTTY ? process.stdout.columns || 80 : 80,
+	});
 	process.stdout.write(`${report}\n`);
 
 	const fixable = results.filter((r) => r.fix && r.fixTarget);

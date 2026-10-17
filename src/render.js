@@ -20,10 +20,40 @@ export function toJson(results, extra = {}) {
 }
 
 /**
- * Human report. Plain text on purpose: it renders identically in the TUI, over
- * RPC, and in a CI log, and it stays readable when the terminal is 60 columns.
+ * Greedy word wrap. `indent` is the column the first line starts at, so a
+ * continuation line lines up under the text it continues.
+ * A single word longer than the available width is left intact rather than cut.
  */
-export function renderReport(results, { verbose = false, hintCommand = "/checkup verbose" } = {}) {
+function wrapText(text, width, indent) {
+	const body = String(text ?? "");
+	if (!body) return [""];
+	if (indent + body.length <= width) return [body];
+
+	const lines = [];
+	let line = "";
+	for (const word of body.split(/\s+/).filter(Boolean)) {
+		if (!line) line = word;
+		else if (indent + line.length + 1 + word.length <= width) line += ` ${word}`;
+		else {
+			lines.push(line);
+			line = word;
+		}
+	}
+	if (line) lines.push(line);
+	return lines.length ? lines : [body];
+}
+
+/**
+ * Human report. Plain text on purpose: it renders identically in the TUI, over
+ * RPC, and in a CI log.
+ *
+ * Details are wrapped rather than left to the terminal, because the longest of
+ * them (a list of unreachable package commands) runs well past 80 columns and
+ * terminal wrapping breaks it mid-word with no indent, which reads as a new
+ * finding. `width` is supplied by the CLI from the real terminal; the default
+ * keeps RPC and log output stable regardless of who is reading it.
+ */
+export function renderReport(results, { verbose = false, hintCommand = "/checkup verbose", width = 80 } = {}) {
 	const byGroup = new Map();
 	for (const r of results) {
 		const g = r.group ?? "Other";
@@ -36,12 +66,25 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 		return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
 	});
 
+	// Wide enough for the longest title in this report, so one long name does not
+	// push a single row's detail out of alignment with every other row.
+	const titleWidth = Math.min(22, Math.max(8, ...results.map((r) => r.title.length)));
+	const detailColumn = 4 + titleWidth + 1;
+
 	const lines = [];
 	for (const g of groups) {
 		lines.push(g);
 		for (const r of byGroup.get(g)) {
-			lines.push(`  ${MARKS[r.status] ?? "?"} ${r.title.padEnd(16)} ${r.detail}`);
-			if (verbose && r.hint && r.status !== "ok") lines.push(`      ${r.hint}`);
+			const parts = wrapText(r.detail, width, detailColumn);
+			lines.push(`  ${MARKS[r.status] ?? "?"} ${r.title.padEnd(titleWidth)} ${parts[0]}`);
+			for (const p of parts.slice(1)) lines.push("".padEnd(detailColumn) + p);
+			// Hints are shown for anything the user can act on, including an ok row
+			// whose detail carries a caveat.
+			if (verbose && r.hint) {
+				for (const p of wrapText(r.hint, width, detailColumn)) {
+					lines.push("".padEnd(detailColumn) + p);
+				}
+			}
 		}
 	}
 

@@ -13,7 +13,41 @@ function sourceOf(spec) {
 }
 
 function stamp() {
-	return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+	// Milliseconds are kept: two repairs in the same second would otherwise
+	// write the same backup name and the second copy would clobber the first.
+	return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 23);
+}
+
+/**
+ * Write a file without ever leaving a half-written one behind.
+ *
+ * `writeFileSync` truncates first, so a crash or a full disk mid-write leaves a
+ * corrupt config — the exact failure this package exists to detect, caused by
+ * the repair. Writing a sibling temp file and renaming over the target is
+ * atomic on POSIX and on Windows (rename replaces an existing file there too).
+ * The original mode is carried over, because a models.json that was chmod 600
+ * must not come back 644.
+ */
+function writeAtomic(target, content) {
+	const tmp = `${target}.checkup-tmp-${stamp()}`;
+	let mode;
+	try {
+		mode = fs.statSync(target).mode;
+	} catch {
+		mode = undefined;
+	}
+	try {
+		fs.writeFileSync(tmp, content, { mode: mode ?? 0o600 });
+		if (mode !== undefined) fs.chmodSync(tmp, mode);
+		fs.renameSync(tmp, target);
+	} catch (e) {
+		try {
+			fs.rmSync(tmp, { force: true });
+		} catch {
+			// Nothing useful to do; the rename failure below is the real error.
+		}
+		throw e;
+	}
 }
 
 /**
@@ -27,7 +61,9 @@ export function applyRestoreConfig(target) {
 	if (!parsed.ok) return { ok: false, message: `backup ${path.basename(backup)} is not valid JSON either` };
 	const aside = `${target}.broken-${stamp()}`;
 	fs.copyFileSync(target, aside);
-	fs.copyFileSync(backup, target);
+	// The backup is valid JSON (checked above), so restoring its bytes verbatim
+	// keeps any formatting the user had.
+	writeAtomic(target, fs.readFileSync(backup, "utf8"));
 	return {
 		ok: true,
 		message: `restored ${path.basename(target)} from ${path.basename(backup)} (broken copy kept as ${path.basename(aside)})`,
@@ -59,7 +95,7 @@ export function applyDedupePackages(target) {
 	const backup = `${target}.checkup-bak-${stamp()}`;
 	fs.copyFileSync(target, backup);
 	settings.data.packages = kept;
-	fs.writeFileSync(target, `${JSON.stringify(settings.data, null, 2)}\n`);
+	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
 		ok: true,
 		message: `removed ${removed} duplicate entr${removed === 1 ? "y" : "ies"} from ${path.basename(target)} (backup: ${path.basename(backup)})`,
@@ -101,7 +137,7 @@ export function applyPruneMissingPackages(target) {
 	const backup = `${target}.checkup-bak-${stamp()}`;
 	fs.copyFileSync(target, backup);
 	settings.data.packages = kept;
-	fs.writeFileSync(target, `${JSON.stringify(settings.data, null, 2)}\n`);
+	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
 		ok: true,
 		message: `removed ${removed.length} entr${removed.length === 1 ? "y" : "ies"} with no directory on disk (${removed.slice(0, 3).join(", ")}${removed.length > 3 ? ", ..." : ""}); backup: ${path.basename(backup)}`,

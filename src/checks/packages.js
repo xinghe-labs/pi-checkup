@@ -14,7 +14,9 @@ export const group = "Packages";
 export async function run({ settings, agentDir: root, settingsFile }) {
 	const results = [];
 
-	const specs = settings?.packages ?? [];
+	// A hand-edited settings.json can put a string here, and iterating that would
+	// walk it character by character and report seven unverifiable "sources".
+	const specs = Array.isArray(settings?.packages) ? settings.packages : [];
 
 	if (!specs.length) {
 		return [
@@ -23,7 +25,7 @@ export async function run({ settings, agentDir: root, settingsFile }) {
 				id: "installed",
 				title: "installed",
 				status: "skip",
-				detail: "no packages in settings.json",
+				detail: settings?.packages ? "settings.json `packages` is not a list" : "no packages in settings.json",
 			},
 		];
 	}
@@ -65,8 +67,9 @@ export async function run({ settings, agentDir: root, settingsFile }) {
 		manifestRead++;
 		const declared = manifest.data?.pi?.extensions;
 		if (!declared) continue; // convention-directory package, nothing to verify
-		entryChecked++;
 		const list = Array.isArray(declared) ? declared : [declared];
+		if (!list.length) continue; // declared nothing, so there is nothing to verify
+		entryChecked++;
 		const missing = list.filter((entry) => !globExists(dir, entry));
 		if (missing.length) missingEntry.push(`${source} -> ${missing.join(", ")}`);
 	}
@@ -86,8 +89,11 @@ export async function run({ settings, agentDir: root, settingsFile }) {
 				fixTarget: settingsFile || undefined,
 			}),
 		);
-	} else {
+	} else if (present) {
 		results.push(row("dirs", "package dirs", "ok", `${present} present`));
+	} else {
+		// Every entry was resolved by Pi itself, so no directory was ever opened.
+		results.push(row("dirs", "package dirs", "skip", "no package directory could be inspected"));
 	}
 
 	// --- manifests ---------------------------------------------------------

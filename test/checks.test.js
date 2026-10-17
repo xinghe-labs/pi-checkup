@@ -88,6 +88,37 @@ test("packages: a manifest pointing at a file that is not there fails", async ()
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("packages: a non-list `packages` value is reported, not walked char by char", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: "npm:oops" });
+
+	const rows = await packages.run(buildContext({ agentDir: root }));
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0].status, "skip");
+	assert.match(rows[0].detail, /not a list/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: sources Pi resolves itself are not reported as zero present", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: ["git:https://example.test/x.git"] });
+
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows.dirs.status, "skip");
+	assert.equal(rows.unverifiable.status, "skip");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: an empty extensions array is not counted as verified", async () => {
+	const root = tmpRoot();
+	installPkg(root, "empty", { pi: { extensions: [] } });
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:empty"] });
+
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows.entries.status, "skip");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 // --- config --------------------------------------------------------------
 
 test("config: a literal dollar sign in settings is not an env reference", async () => {

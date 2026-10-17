@@ -122,3 +122,58 @@ test("buildContext falls back to the settings file without a session", () => {
 	// Whatever the file holds, the source must not claim to be the runtime.
 	assert.notEqual(ctx.settingsSource, "runtime");
 });
+
+// --- durability ----------------------------------------------------------
+
+test("a write leaves no temp file behind and keeps the original mode", () => {
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:a", "npm:a"] }, null, 2));
+	fs.chmodSync(file, 0o600);
+
+	const result = applyDedupePackages(file);
+	assert.equal(result.ok, true);
+
+	// A models.json chmod 600 must not come back readable by everyone.
+	if (process.platform !== "win32") {
+		assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+	}
+	// The temp sibling must not survive a successful rename.
+	const leftovers = fs.readdirSync(dir).filter((n) => n.includes("checkup-tmp-"));
+	assert.deepEqual(leftovers, []);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).packages, ["npm:a"]);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("two repairs in the same second get distinct backup names", () => {
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:a", "npm:a"] }, null, 2));
+
+	// Both run synchronously, so they land inside the same second.
+	applyDedupePackages(file);
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:b", "npm:b"] }, null, 2));
+	applyDedupePackages(file);
+
+	const backups = fs.readdirSync(dir).filter((n) => n.includes("checkup-bak-"));
+	assert.equal(backups.length, 2, `expected two distinct backups, got ${backups.join(", ")}`);
+	// The first backup must still hold the pre-repair content.
+	const contents = backups.map((n) => fs.readFileSync(path.join(dir, n), "utf8"));
+	assert.ok(contents.some((c) => c.includes("npm:a")), "the first backup was overwritten");
+	assert.ok(contents.some((c) => c.includes("npm:b")), "the second backup is missing");
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("restore writes the backup's bytes verbatim, formatting included", () => {
+	const dir = tmp();
+	const file = path.join(dir, "models.json");
+	const original = '{\n\t"providers": {}\n}\n';
+	fs.writeFileSync(`${file}.bak`, original);
+	fs.writeFileSync(file, "{ broken");
+
+	const result = applyRestoreConfig(file);
+	assert.equal(result.ok, true);
+	// Restoring must not reformat: the backup is the source of truth.
+	assert.equal(fs.readFileSync(file, "utf8"), original);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
