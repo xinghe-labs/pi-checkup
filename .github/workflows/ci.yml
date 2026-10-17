@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Syntax check every source file
+        shell: bash
+        run: |
+          for f in $(find src -name '*.js'); do node --check "$f"; done
+      - name: Unit tests
+        run: node --test
+
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Manifest declares the extension entry
+        run: |
+          node -e "
+          const pkg = require('./package.json');
+          if (!pkg.keywords.includes('pi-package')) throw new Error('missing pi-package keyword');
+          const entries = pkg.pi?.extensions ?? [];
+          if (!entries.length) throw new Error('pi.extensions is empty');
+          const fs = require('fs');
+          for (const e of entries) {
+            if (!fs.existsSync(e.replace(/^\.\//, ''))) throw new Error('missing entry: ' + e);
+          }
+          if (!pkg.files.includes('src/')) throw new Error('files[] would exclude the source');
+          console.log('manifest ok');
+          "
+      - name: Packed tarball contains the entry point
+        run: |
+          npm pack --dry-run 2>&1 | tee pack.log
+          grep -q 'src/index.js' pack.log

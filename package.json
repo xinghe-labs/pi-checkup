@@ -1,0 +1,43 @@
+{
+  "name": "pi-checkup",
+  "version": "0.1.0",
+  "description": "Health checks for your Pi setup: tool/command conflicts, broken packages, shadowed binaries, dead endpoints.",
+  "type": "module",
+  "license": "MIT",
+  "author": "",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "pi",
+    "extension",
+    "healthcheck",
+    "diagnostics",
+    "doctor",
+    "troubleshooting"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.js"
+    ]
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/",
+    "lint": "node --check src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CHANGE_ME/pi-checkup.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CHANGE_ME/pi-checkup/issues"
+  },
+  "homepage": "https://github.com/CHANGE_ME/pi-checkup#readme"
+}
