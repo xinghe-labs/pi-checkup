@@ -342,6 +342,81 @@ export async function resolveHost(host, timeout = 4000) {
 }
 
 /**
+ * The proxy this process should use, from the environment, or undefined.
+ *
+ * Read here rather than in one module: the provider probe and the runtime proxy
+ * check have to agree on what "a proxy is configured" means, and they used to
+ * disagree — Runtime reported one while the probe silently ignored it.
+ */
+export function proxyFromEnv(env = process.env) {
+	for (const key of ["https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"]) {
+		const value = env[key];
+		if (typeof value === "string" && value.trim()) return value.trim();
+	}
+	return undefined;
+}
+
+/**
+ * Make one request through `proxy` with curl, and return the HTTP status code.
+ *
+ * curl is used instead of fetch because Node's global fetch ignores the proxy
+ * environment variables entirely: a user behind a corporate proxy got
+ * "unreachable" for endpoints that work fine in their browser. curl honours
+ * `proxy` natively, and this package already depends on it for the opt-in
+ * forwarding test.
+ *
+ * The proxy URL and every header go in a 0600 config file, never in argv:
+ * `-x`/`-H` on the command line are readable by every other user on the box
+ * through `ps` and /proc, and both routinely carry a credential.
+ */
+export async function curlProbe(url, { proxy, headers = {}, maxTime = 6, timeout = 8000 } = {}) {
+	let dir;
+	try {
+		dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-checkup-"));
+		const configFile = path.join(dir, "curl.conf");
+		// curl config syntax: quoted values, backslash escapes. Line breaks are
+		// stripped first: a newline in the value would end the directive and let
+		// the rest of the string start a new one.
+		const quote = (value) =>
+			String(value)
+				.replace(/[\r\n]/g, "")
+				.replace(/\\/g, "\\\\")
+				.replace(/"/g, '\\"');
+		const lines = [];
+		if (proxy) lines.push(`proxy = "${quote(proxy)}"`);
+		for (const [name, value] of Object.entries(headers)) {
+			if (value === undefined || value === null) continue;
+			lines.push(`header = "${quote(`${name}: ${value}`)}"`);
+		}
+		fs.writeFileSync(configFile, `${lines.join("\n")}\n`, { mode: 0o600 });
+		const res = await sh(
+			"curl",
+			// -sS: quiet progress, but still print the failure reason to stderr.
+			["-sS", "-o", isWindows ? "NUL" : "/dev/null", "-w", "%{http_code}", "--max-time", String(maxTime), "--config", configFile, url],
+			timeout,
+		);
+		// curl prints 000 for a refused or timed-out connection and exits 7 or 28.
+		// Reading only `ok` turned a dead proxy into "skipped, tool unavailable".
+		return { missing: res.missing === true, code: (res.out ?? "").trim(), error: res.ok ? "" : String(res.err ?? "").trim() };
+	} catch (e) {
+		return { missing: false, code: "", error: String(e?.message ?? e) };
+	} finally {
+		if (dir) {
+			try {
+				fs.rmSync(dir, { recursive: true, force: true });
+			} catch {
+				// Best effort; the file is 0600 and inside the OS temp dir.
+			}
+		}
+	}
+}
+
+/** Is this HTTP status one that proves the endpoint answered? */
+export function statusIsAlive(code) {
+	return code === 200 || code === 401 || code === 403;
+}
+
+/**
  * A URL that is safe to put in a report: scheme, host, port and path, with the
  * userinfo and the query string dropped.
  *
@@ -352,18 +427,73 @@ export async function resolveHost(host, timeout = 4000) {
 export function redactUrl(raw) {
 	const text = String(raw ?? "").trim();
 	if (!text) return "(empty)";
-	if (!text.includes("://")) {
+	if (!text.includes("://") && !text.startsWith("//")) {
 		// Not a URL. Strip anything that looks like a credential anyway rather than
 		// echoing the raw paste back at the user.
 		return scrubCredentials(text);
 	}
 	try {
 		const url = new URL(text);
+		// An empty hostname means the parse produced an opaque path, not an address:
+		// `git:https://…` and the routine `localhost:11434/v1` paste both land here.
+		// Printing `url.origin` would then print the string "null".
+		if (!url.hostname) return scrubCredentials(text);
 		const path = url.pathname === "/" ? "" : url.pathname;
 		return `${url.protocol}//${url.host}${path}`;
 	} catch {
 		return scrubCredentials(text);
 	}
+}
+
+/**
+ * A proxy URL safe to put in a report.
+ *
+ * Corporate proxies are routinely configured as http://user:password@host:port,
+ * so the raw env value must never reach the terminal, the JSON payload, or a CI
+ * log — which is exactly where --offline used to print it. Scheme, host and port
+ * are all the user needs to recognise their own proxy.
+ */
+export function redactProxy(raw) {
+	const text = String(raw ?? "").trim();
+	if (!text) return "(empty)";
+
+	// Only trust the URL parser when the value actually looks like a URL. Without
+	// "//", `alice:pw@host:8080` parses as scheme "alice:" and the parser returns
+	// a meaningless origin instead of a scrubbed one.
+	if (text.includes("://")) {
+		try {
+			const url = new URL(text);
+			if (url.hostname) {
+				// Only the port the user actually wrote: printing a default :443 next to
+				// a URL that has no port makes the report disagree with the config the
+				// user is looking at, which is the one thing this string is for.
+				return `${url.protocol}//${url.hostname}${url.port ? `:${url.port}` : ""}`;
+			}
+		} catch {
+			// Fall through to the textual scrub below.
+		}
+	}
+
+	// Everything before the last "@" is a credential; everything after it is the
+	// proxy the user needs to recognise.
+	return text.slice(text.lastIndexOf("@") + 1).replace(/^[a-z0-9+.-]+:\/\//i, "") || "(configured)";
+}
+
+/**
+ * A package source, safe to print.
+ *
+ * `settings.json` legitimately holds sources that carry a token, because the
+ * only way to install a private repo over HTTPS is one in the URL:
+ * `git:https://ghp_xxx@github.com/me/private`. That string used to reach the
+ * report, the `--json` payload and therefore any CI log verbatim.
+ */
+export function redactSource(spec) {
+	const text = String(spec ?? "");
+	const at = text.indexOf("://");
+	if (at === -1) return scrubCredentials(text);
+	const scheme = text.slice(0, at + 3);
+	const rest = text.slice(at + 3);
+	return scrubCredentials(`${scheme}${rest}`);
 }
 
 /**
@@ -373,11 +503,16 @@ export function redactUrl(raw) {
  * https://user:pass@host/v1/models`, and that message ends up in the report.
  */
 export function scrubCredentials(text) {
-	return String(text ?? "")
-		.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1***@")
-		// A query string is dropped whole rather than masked: it is where a pasted
-		// `?key=sk-…` lives, and nothing in a report needs it.
-		.replace(/\?[^\s]*/g, "");
+	return (
+		String(text ?? "")
+			// The scheme is optional on purpose: `//user:pass@host/v1` is a
+			// protocol-relative paste, it fails `new URL` without a base, and it used
+			// to be echoed unchanged by the very branch that exists to hide it.
+			.replace(/([a-z][a-z0-9+.-]*:)?\/\/[^/\s@]+@/gi, "$1//***@")
+			// A query string is dropped whole rather than masked: it is where a pasted
+			// `?key=sk-…` lives, and nothing in a report needs it.
+			.replace(/\?[^\s]*/g, "")
+	);
 }
 
 /**

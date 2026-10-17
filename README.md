@@ -4,22 +4,6 @@
 
 A health-check extension for [Pi](https://pi.dev). It inspects the *running* session — not just your `settings.json` — and reports the failures that produce no error message anywhere: tools silently shadowed by another package, binaries that resolve to a completely different program, packages that are installed but registered nothing, endpoints that stopped answering.
 
-```text
-/checkup
-```
-
-## The problem
-
-A Pi install accumulates packages. Each one registers tools, commands, hooks, and sometimes shell binaries. When one of them stops working, nothing tells you:
-
-- Two packages claimed the same tool name, and the second one silently won. The first is now unreachable.
-- A package is in `settings.json`, its directory exists, but its manifest points at a file that isn't there. It loaded nothing and logged nothing.
-- `ast-grep` ships a binary named `sg`. So does the shadow-utils package. Typing `sg` starts the wrong one.
-- A blocked `postinstall` left `node_modules/.bin/playwright` as a dangling symlink.
-- Your provider endpoint moved. The only symptom is a request that hangs 60 seconds later.
-
-`pi list` prints paths. `pi --verbose` prints warnings you have to read line by line. Neither answers *"is my setup actually coherent right now?"*
-
 ## Install
 
 ```bash
@@ -35,9 +19,21 @@ Then, in a session:
 /checkup fix        restore a broken config from its backup (asks first)
 ```
 
-### When Pi will not start
+## The problem
 
-The in-session command is useless in the one case you need it most: Pi is installed but will not boot. So the same checks also ship as a standalone CLI.
+A Pi install accumulates packages. Each one registers tools, commands, hooks, and sometimes shell binaries. When one of them stops working, nothing tells you:
+
+- Two packages claimed the same tool name, and the second one silently won. The first is now unreachable.
+- A package is in `settings.json`, its directory exists, but its manifest points at a file that isn't there. It loaded nothing and logged nothing.
+- `ast-grep` ships a binary named `sg`. So does the shadow-utils package. Typing `sg` starts the wrong one.
+- A blocked `postinstall` left `node_modules/.bin/playwright` as a dangling symlink.
+- Your provider endpoint moved. The only symptom is a request that hangs 60 seconds later.
+
+`pi list` prints paths. `pi --verbose` prints warnings you have to read line by line. Neither answers *"is my setup actually coherent right now?"*
+
+## The standalone CLI
+
+The in-session command is useless in the one case you need it most: Pi is installed but will not boot. The same checks also ship as a CLI that needs no session, no Pi, and no `node_modules` — which is also what you want in CI, or on a machine you are about to hand over.
 
 ```bash
 npx pi-checkup            # full report
@@ -46,18 +42,18 @@ npx pi-checkup --json     # for scripts
 npx pi-checkup --fix -y   # apply the safe repairs without prompting
 ```
 
-It exits `1` when any check fails, so it works as a pre-flight step in CI or a shell profile. After a repair it re-runs the checks and exits on the new result, so `pi-checkup --fix -y && start-pi` does what it looks like it does. `--json` cannot be combined with `--fix`: the JSON is a single snapshot, and a repair changes what the snapshot describes.
+It exits `1` when any check fails, so it works as a pre-flight step in CI or a shell profile. After a repair it re-runs the checks and exits on the new result, so `npx pi-checkup --fix -y && start-pi` does what it looks like it does. `--json` cannot be combined with `--fix`: the JSON is a single snapshot, and a repair changes what the snapshot describes.
 
 The registry section reports skipped — auditing loaded tools genuinely requires a live process — and the CLI says so instead of implying a clean bill of health.
 
-Exit codes: `0` nothing failed, `1` at least one check failed, `2` bad usage. The `--json` payload is the same report the text renderer prints, minus the repair metadata.
+Exit codes: `0` nothing failed, `1` at least one check failed, `2` bad usage or a crashed run. The `--json` payload is the same report the text renderer prints, minus the repair metadata.
 
 | Variable | Effect |
 |---|---|
 | `PI_CODING_AGENT_DIR` | Check a different Pi install than `~/.pi/agent`. The CLI needs no session, so this is how you check a container, a second profile, or a Pi that will not boot at all |
 | `PI_CHECKUP_IGNORE` | Suppress rows you have decided to live with — see below |
 | `PI_CHECKUP_PROBE_URL` | Test real proxy *forwarding* with `curl`, instead of only proving the port is open |
-| `https_proxy`, `HTTP_PROXY` | Honoured by the provider probe and reported (redacted) under Runtime |
+| `https_proxy`, `HTTP_PROXY` | Used by the provider probe (through `curl`, because Node's `fetch` ignores these) and reported redacted under Runtime |
 
 ```text
 $ npx pi-checkup
@@ -96,11 +92,9 @@ Run `npx pi-checkup --verbose` to show what to do about each finding.
 ! 1 warning  ·  run /checkup inside Pi for registry checks
 ```
 
-The footer line is the verdict, and it counts the skipped rows too: `✓ 3 ok, 2 skipped` rather than a bare "all clear" over a report where part of it was never checked.
-
 ## Real output
 
-This is an actual run on a working install, copied out of the TUI at 80 columns — not a mock-up. 21 of 24 checks pass, two are skipped because there is genuinely nothing to look at, and the one warning is a real problem that `pi list` said nothing about:
+This is an actual run on a working install, copied out of the TUI at 80 columns — not a mock-up. The two `Network` rows describe the moment it ran; everything else is a property of the install. 21 of 24 checks pass, two are skipped because there is genuinely nothing to look at, and the one warning is a real problem that `pi list` said nothing about:
 
 ```text
 Registry
@@ -143,7 +137,7 @@ Runtime
 Run `/checkup verbose` to show what to do about each finding.
 ```
 
-The `attribution` row is the part no other tool gives you: which package owns which tools, counted from the live registry rather than from your config. It is also why this report has a column width the earlier CLI example does not — the longest title in a session report is `command collisions`, and the whole block is rendered to fit it.
+The `attribution` row is the part no other tool gives you: which package owns which tools, counted from the live registry rather than from your config. Both blocks above share the same 23-column detail column, because `duplicate packages` and `command collisions` are both 18 characters wide and the renderer sizes the column to the longest title in the report it is printing.
 
 ## What it checks
 
@@ -152,15 +146,20 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | **Registry** | Tool and command collisions | One extension silently stops being reachable; the later registration wins with no error |
 | | Silent packages | Declared an extension but registered no tool or command — either by design or a load failure |
 | | Attribution | Which package owns each of your tools and commands, by name |
-| **Packages** | Missing directories | In `settings.json` but gone from `node_modules` |
+| **Packages** | Package list | Whether `settings.json` could be read at all — a hand-edited file that does not parse is reported as unreadable, not as "no packages" |
+| | Missing directories | In `settings.json` but gone from `node_modules` |
 | | Unreadable manifests | Corrupt or partially extracted `package.json` |
 | | Missing entry files | The manifest points at a build output that was never shipped |
+| | Unverifiable sources | `git:` and `https:` packages, which Pi resolves internally and no static check can follow |
+| | Malformed entries | A `packages` entry that is not a source string — `null`, a number, an object without `source` |
 | **Binaries** | Dangling symlinks | Blocked `postinstall`, or an optional native dependency skipped for this platform |
 | | Install leftovers | `.<name>-<random>` staging links in `.bin`: an install is running right now, or was interrupted. Its own finding, not a broken package |
+| | Missing shims | The package declares a `bin` but npm never linked it into `.bin` — usually an install run with `--ignore-scripts` |
 | | Shadowed names | A package's command name resolves to an unrelated program earlier on `PATH` |
 | | Unreachable bins | A package ships a CLI you cannot invoke by name |
 | **Network** | Endpoint reachability | Probes `<baseUrl>/models` for every provider. `401`/`403` counts as alive — this never validates your key and never spends tokens |
 | | Cleartext auth | A provider on `http://` with a key configured. The probe is sent without the key and the config is reported instead |
+| | Malformed baseUrl | A `baseUrl` that is not a URL (including the `localhost:11434/v1` paste with no scheme) or is not a string at all |
 | | DNS | Provider hosts that do not resolve, or resolve only to loopback |
 | **Config** | Invalid JSON | With a backup on disk, `/checkup fix` can restore it |
 | | Duplicate package entries | The package loads twice and the second registration can shadow the first |
@@ -185,7 +184,7 @@ Inside a session Pi hands checkup the settings from the *running process*, not t
 npx pi-checkup --fix --yes
 ```
 
-Every write is preceded by a timestamped backup, and the command asks for confirmation before touching anything. Anything that would delete a package, disable an extension, or edit your shell environment is reported with a suggestion and left alone — a diagnostic tool should not be able to break your setup in the process of describing it.
+Every write is preceded by a timestamped backup, and neither path writes on its own: `/checkup fix` asks in the TUI, and the CLI refuses to write unless you pass `--yes`. Anything that would delete a package, disable an extension, or edit your shell environment is reported with a suggestion and left alone — a diagnostic tool should not be able to break your setup in the process of describing it.
 
 A repair that rewrites `settings.json` re-serialises it with two-space indentation, so expect a larger diff than the change itself. Nothing is repaired unless a check found something wrong, so a healthy install writes nothing at all.
 
@@ -208,7 +207,7 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
 
 ## JSON output
 
-`/checkup json` prints the full report for scripts and CI:
+`/checkup json` prints the report as one object for scripts and CI. Two of the 24 entries are shown here:
 
 ```json
 {
@@ -233,12 +232,15 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
 }
 ```
 
+The `checks` array always has one entry per row of the text report, in the same order.
+```
+
 Exit-worthy statuses are `fail`; `warn` means something is degraded but working. Repair metadata is stripped from the JSON payload.
 
 ## Design principles
 
 - **No traffic to anyone but your own provider.** The only outbound requests are `<baseUrl>/models` for providers already in `models.json`, plus a DNS lookup of those same hosts. The proxy check is a plain TCP connect to the proxy's own address — set `PI_CHECKUP_PROBE_URL` if you want a real end-to-end forwarding test.
-- **No secrets printed, no keys validated.** A provider probe sends whatever auth header your config already defines and ignores the response body. A key on a plain-`http://` endpoint that is not on your own machine is never sent. A proxy URL is always shown as scheme, host and port — corporate proxies carry credentials in the URL, and `https_proxy` is the one place they usually live in plain text.
+- **No secrets printed, no keys validated.** A provider probe sends whatever auth header your config already defines and ignores the response body. A key on a plain-`http://` endpoint that is not on your own machine is never sent. A proxy URL is always shown as scheme, host and port, and a `git:` source carrying a token is scrubbed the same way — corporate proxies and private repos both keep credentials in the URL, and both are the kind of string that ends up in a CI log. A `baseUrl` with credentials in it is moved into a header before the probe, so no error message can quote it back.
 - **Non-blocking.** Every check runs concurrently, and every outbound call has its own timeout — 8s for a probe, 4s for DNS, 3s for a TCP connect — under a 30s per-module backstop. A hung endpoint costs 8 seconds, not the whole command.
 - **A crashing check is a finding, not a crash.** If a check module throws, the report says which one, marks it failed, and still shows everything else.
 - **A check with nothing to inspect says so.** `skip` always means "there was nothing to inspect", in every module — an absent optional config file, an empty `.bin`, a provider list with no host to resolve. Zero packages present reports `skip`, never a green tick over nothing, and the verdict counts them: `✓ 3 ok, 2 skipped` rather than a bare "all clear".
@@ -254,7 +256,9 @@ Being explicit about what this cannot see:
 - **The registry section needs a running session.** Tools and commands are read from the live process; the CLI reports that section as skipped rather than guessing from disk.
 - **Tool collisions are reported, not resolved.** Pi's registry keeps the last registration; checkup tells you it happened.
 - **The proxy check proves the port is open, not that forwarding works.** A TCP connect tells you the process is running; it says nothing about whether it can reach a given target. Set `PI_CHECKUP_PROBE_URL` for the full test, which uses `curl`.
+- **A proxied provider probe needs `curl`.** Node's `fetch` ignores `https_proxy`, so when a proxy is configured the probe shells out to `curl`, which honours it. Without `curl` on `PATH` that row reports `skip` with the reason instead of inventing a reachability failure.
 - **Static checks describe the current session.** Install a package and the registry section is stale until `/reload`.
+- **A DNS lookup that hangs can outlive the report.** `resolveHost` races the lookup against a 4s deadline so the report is never held hostage, but Node's pending `getaddrinfo` request can keep the process alive for a while after the verdict is printed. The report is complete and correct; the exit is merely later than it looks.
 - **A run that overlaps an install describes a moving target.** Half-extracted packages and npm's staging links in `.bin` are visible for a second or two; checkup reports them as install leftovers and suggests re-running once the install finishes, but it cannot wait for it.
 
 ## Development
@@ -263,7 +267,7 @@ Being explicit about what this cannot see:
 git clone https://github.com/xinghe-labs/pi-checkup
 cd pi-checkup
 npm run lint         # node --check over every source file
-node --test          # 90 tests, no Pi session needed
+node --test          # 103 tests, no Pi session needed
 ```
 
 To try a local checkout without installing:
@@ -281,7 +285,7 @@ src/
   index.js           in-session command registration, fix flow
   context.js         where a check gets its inputs (session vs disk)
   render.js          one formatter for text and JSON
-  repair.js          the only module that writes to disk
+  repair.js          the only module that writes to user files
   util.js            cross-platform helpers, no dependencies
   checks/
     index.js         the check registry, shared by command and CLI

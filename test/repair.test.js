@@ -18,7 +18,7 @@ test("dedupe keeps the first occurrence and backs up the original", () => {
 	const file = path.join(dir, "settings.json");
 	fs.writeFileSync(
 		file,
-		JSON.stringify({ packages: ["npm:a", "npm:b", { source: "npm:a" }, "npm:c"] }, null, 2),
+		JSON.stringify({ packages: ["npm:a", "npm:b", "npm:a", "npm:c"] }, null, 2),
 	);
 
 	const result = applyDedupePackages(file);
@@ -31,6 +31,39 @@ test("dedupe keeps the first occurrence and backs up the original", () => {
 	const backups = fs.readdirSync(dir).filter((f) => f.includes("checkup-bak-"));
 	assert.equal(backups.length, 1);
 	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, backups[0]), "utf8")).packages.length, 4);
+
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("dedupe leaves a same-source entry alone when its shape differs", () => {
+	// `"npm:a"` and `{"source": "npm:a", "enabled": false}` are the same source
+	// with different intent. Deleting the second one changed what Pi loads, and
+	// calling that a "duplicate" was wrong.
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	const original = { packages: ["npm:a", { source: "npm:a", enabled: false }] };
+	fs.writeFileSync(file, JSON.stringify(original, null, 2));
+
+	const result = applyDedupePackages(file);
+	assert.equal(result.ok, true);
+	assert.match(result.message, /nothing to dedupe/);
+	assert.match(result.message, /differ in shape/);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), original);
+	assert.equal(fs.readdirSync(dir).filter((f) => f.includes("checkup-bak-")).length, 0);
+
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("restore refuses when the target was repaired by hand in the meantime", () => {
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(`${file}.bak-20260101-000000-000`, JSON.stringify({ packages: ["npm:old"] }));
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:hand-fixed"] }));
+
+	const result = applyRestoreConfig(file);
+	assert.equal(result.ok, false);
+	assert.match(result.message, /valid JSON again/);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { packages: ["npm:hand-fixed"] });
 
 	fs.rmSync(dir, { recursive: true, force: true });
 });

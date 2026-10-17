@@ -4,11 +4,23 @@
 // /models, and a 401/403 still proves the host answered. No vendor SDK, no
 // API key validation (this package never spends your tokens).
 import path from "node:path";
-import { bareHost, isLoopbackHost, readJson, redactUrl, resolveHost, scrubCredentials, timedFetch } from "../util.js";
+import {
+	bareHost,
+	curlProbe,
+	isLoopbackHost,
+	proxyFromEnv,
+	readJson,
+	redactProxy,
+	redactUrl,
+	resolveHost,
+	scrubCredentials,
+	statusIsAlive,
+	timedFetch,
+} from "../util.js";
 
 export const group = "Network";
 
-export async function run({ offline = false, agentDir: root, modelsFile }) {
+export async function run({ offline = false, agentDir: root, modelsFile, env = process.env }) {
 	const results = [];
 	const models = readJson(modelsFile);
 	if (!models.ok) {
@@ -45,9 +57,18 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 	// user is most likely to run.
 	const cleartext = [];
 	const planned = [];
+	// A provider whose baseUrl is not a string used to be dropped in silence, and
+	// the report then claimed there was "no provider with a baseUrl in models.json"
+	// — a statement about the config that the check had just disproved.
+	const badBaseUrl = [];
+	const proxy = proxyFromEnv(env);
 	for (const [name, provider] of entries) {
 		const baseUrl = provider.baseUrl ?? provider.base_url;
-		if (!baseUrl || typeof baseUrl !== "string") continue;
+		if (baseUrl === undefined || baseUrl === null || baseUrl === "") continue;
+		if (typeof baseUrl !== "string") {
+			badBaseUrl.push(`${name} (${Array.isArray(baseUrl) ? "array" : typeof baseUrl})`);
+			continue;
+		}
 		let url;
 		try {
 			url = new URL(baseUrl.replace(/\/+$/, "") + "/models");
@@ -57,14 +78,30 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 			planned.push({ name, invalid: redactUrl(baseUrl) });
 			continue;
 		}
+		// `localhost:11434/v1` — the routine hand-paste with no scheme — parses as
+		// scheme `localhost:` with an opaque path and an empty hostname. The probe
+		// then printed "null unreachable" and the DNS check invented a failure for
+		// the empty string, which is a finding the check never established.
+		if (!url.hostname || !/^https?:$/.test(url.protocol)) {
+			planned.push({ name, invalid: redactUrl(baseUrl) });
+			continue;
+		}
 		// A gateway configured as https://user:pass@host/v1 cannot be fetched at
 		// all: fetch() refuses a URL that carries credentials, so the probe failed
 		// with an error that quoted the password back. Moving them into a header
 		// makes the probe work and keeps them out of the URL and the message.
 		let userinfo = null;
+		let userinfoError = null;
 		if (url.username || url.password) {
-			const pair = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
-			userinfo = `Basic ${Buffer.from(pair).toString("base64")}`;
+			// A literal `%` survives the URL parser but throws in decodeURIComponent.
+			// The throw used to escape run(), replacing the whole Network group with
+			// a crash row that blamed pi-checkup for a typo in the user's config.
+			try {
+				const pair = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+				userinfo = `Basic ${Buffer.from(pair).toString("base64")}`;
+			} catch {
+				userinfoError = `${name}: credentials in baseUrl are not valid percent-encoding, so they were not sent`;
+			}
 			url.username = "";
 			url.password = "";
 		}
@@ -84,6 +121,7 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 			// An explicit apiKey wins over userinfo; a URL carrying both is a user
 			// mid-migration, not a configuration to guess about.
 			userinfo: hasKey ? null : userinfo,
+			userinfoError,
 		});
 	}
 
@@ -125,26 +163,24 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 			probes.push(Promise.resolve({ name: item.name, status: "fail", detail: `${item.name}: invalid baseUrl ${item.invalid}` }));
 			continue;
 		}
-		const { name, url, key, userinfo } = item;
+		const { name, url, key, userinfo, userinfoError } = item;
 		const host = bareHost(url.hostname);
 		hosts.set(host, name);
+		if (userinfoError) {
+			probes.push(Promise.resolve({ name, status: "warn", detail: userinfoError }));
+			continue;
+		}
 		const auth = key ? `Bearer ${key}` : userinfo;
 		const headers = auth ? { Authorization: auth } : {};
-		probes.push(
-			timedFetch(url.toString(), { headers }).then((res) => {
-				// 401/403 means the endpoint is up and merely disagrees about auth,
-				// which is a configuration problem, not a reachability problem.
-				const alive = res.ok && (res.status === 200 || res.status === 401 || res.status === 403);
-				return { name, status: alive ? "ok" : "warn", detail: describeProbe(url, res, alive) };
-			}),
-		);
+		probes.push(probeEndpoint(url, { headers, proxy }).then((outcome) => ({ ...outcome, name })));
 	}
 
 	// One line regardless of how many providers are configured. A user with ten
 	// endpoints should not get ten lines of green ticks; the detail is still
 	// there under `verbose`.
 	const outcomes = await Promise.all(probes);
-	const unhealthy = outcomes.filter((o) => o.status !== "ok");
+	const unhealthy = outcomes.filter((o) => o.status === "warn" || o.status === "fail");
+	const unprobed = outcomes.filter((o) => o.status === "skip");
 	if (!outcomes.length) {
 		results.push({
 			group,
@@ -152,6 +188,15 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 			title: "providers",
 			status: "skip",
 			detail: "no provider with a baseUrl in models.json",
+		});
+	} else if (!unhealthy.length && unprobed.length) {
+		// Nothing was sent, so there is nothing to call healthy.
+		results.push({
+			group,
+			id: "providers",
+			title: "providers",
+			status: "skip",
+			detail: unprobed.map((o) => o.detail).join("; "),
 		});
 	} else if (!unhealthy.length) {
 		results.push({
@@ -173,6 +218,17 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 	}
 
 	if (cleartextRow) results.push(cleartextRow);
+
+	if (badBaseUrl.length) {
+		results.push({
+			group,
+			id: "baseUrl-shape",
+			title: "baseUrl shape",
+			status: "warn",
+			detail: `${badBaseUrl.join(", ")} — baseUrl is not a string, so the endpoint was not probed`,
+			hint: "baseUrl has to be a quoted string like \"https://api.example.com/v1\".",
+		});
+	}
 
 	// --- DNS ---------------------------------------------------------------
 	// A host that resolves to loopback while the baseUrl is remote, or does not
@@ -229,6 +285,41 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 }
 
 /** One-line verdict for a provider probe, kept out of the ternary chain. */
+/**
+ * Probe one endpoint, through the proxy when one is configured.
+ *
+ * Node's global fetch ignores `https_proxy` and friends, so a user behind a
+ * corporate proxy saw "unreachable" for endpoints that work in their browser —
+ * a false finding in a tool whose only job is to avoid them. curl honours the
+ * proxy natively; it is already a dependency of the opt-in forwarding test.
+ */
+async function probeEndpoint(url, { headers, proxy }) {
+	if (!proxy) {
+		const res = await timedFetch(url.toString(), { headers });
+		// 401/403 means the endpoint is up and merely disagrees about auth, which
+		// is a configuration problem, not a reachability problem.
+		const alive = res.ok && (res.status === 200 || res.status === 401 || res.status === 403);
+		return { status: alive ? "ok" : "warn", detail: describeProbe(url, res, alive) };
+	}
+	const res = await curlProbe(url.toString(), { proxy, headers });
+	if (res.setupFailed) {
+		// The probe never left the machine; blaming the endpoint would be a finding
+		// this check did not establish.
+		return { status: "skip", detail: `not probed: ${res.error}` };
+	}
+	if (res.missing) {
+		return { status: "skip", detail: "not probed: a proxy is configured but curl is not installed" };
+	}
+	const code = Number(res.code);
+	const alive = statusIsAlive(code);
+	return {
+		status: alive ? "ok" : "warn",
+		detail: alive
+			? `${redactUrl(url.toString())} answered ${code} through ${redactProxy(proxy)}`
+			: `${redactUrl(url.toString())} did not answer through ${redactProxy(proxy)}${code ? ` (HTTP ${code})` : ""}; ${scrubCredentials(res.error) || "no response"}`,
+	};
+}
+
 function describeProbe(url, res, alive) {
 	// `url.origin` never carries userinfo, but `res.error` is fetch's own message
 	// and does quote the URL it failed on, so it is scrubbed before it can reach

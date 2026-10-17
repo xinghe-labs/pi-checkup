@@ -2,3 +2,8 @@ node_modules/
 *.log
 .DS_Store
 .pi/
+# npm pack leaves these in the repo root; a committed tarball would be
+# published inside the next tarball.
+*.tgz
+pack.log
+report.json

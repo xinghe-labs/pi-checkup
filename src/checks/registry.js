@@ -188,11 +188,20 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 		return results;
 	}
 
-	const silent = declaredPackages(settings, root)
+	const candidates = declaredPackages(settings, root);
+	const silent = candidates
 		.filter((pkg) => !loadedPaths.some((loaded) => loaded === pkg.dir || loaded.startsWith(`${pkg.dir}/`)))
 		.map((pkg) => pkg.label);
 	results.push(
-		silent.length
+		!candidates.length
+			? {
+					group,
+					id: "silent",
+					title: "silent packages",
+					status: "skip",
+					detail: "no inspectable package declares an extension",
+				}
+			: silent.length
 			? {
 					group,
 					id: "silent",

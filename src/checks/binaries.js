@@ -60,7 +60,11 @@ function danglingRow(dangling, entryCount) {
 /** bin names that installed packages declare in their own manifests. */
 function declaredBins(settings, root) {
 	const names = new Set();
-	for (const spec of settings?.packages ?? []) {
+	// Guard the type: `"packages": {"a": "npm:x"}` is not iterable, and the throw
+	// replaced the whole Binaries group with a crash row that blamed pi-checkup
+	// for a hand-edited settings file.
+	const specs = Array.isArray(settings?.packages) ? settings.packages : [];
+	for (const spec of specs) {
 		const source = sourceOf(spec);
 		if (!source) continue;
 		const dir = resolvePackageDir(source, root);
@@ -186,6 +190,8 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 		.join("; ");
 	const moreShadow = shadowed.length > 4 ? `; and ${shadowed.length - 4} more` : "";
 
+	// A green tick over zero inspected commands is the same hole the dangling row
+	// closes: an extension-only install declares no bin, so nothing was resolved.
 	results.push(
 		shadowed.length
 			? {
@@ -196,7 +202,9 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 					detail: shownShadow + moreShadow,
 					hint: "Running the bare name in a shell starts a different program. Call the package binary by full path, or reorder PATH.",
 				}
-			: { group, id: "shadowed", title: "shadowed names", status: "ok", detail: "none" },
+			: ownBins.size === 0
+				? { group, id: "shadowed", title: "shadowed names", status: "skip", detail: "no package command declared" }
+				: { group, id: "shadowed", title: "shadowed names", status: "ok", detail: "none" },
 	);
 
 	if (unreachable.length) {

@@ -422,7 +422,10 @@ test("registry: a package declaring an empty extensions list is not silent", asy
 
 	const ctx = buildContext({ agentDir: root, pi: fakePi(settings, []) });
 	const rows = byId(await registry.run(ctx));
-	assert.equal(rows.silent.status, "ok", rows.silent.detail);
+	// Nothing declared an extension to load, so nothing was compared: skip, not a
+	// green tick over zero inspected packages.
+	assert.equal(rows.silent.status, "skip", rows.silent.detail);
+	assert.match(rows.silent.detail, /no inspectable package declares an extension/);
 	assert.ok(dir);
 	fs.rmSync(root, { recursive: true, force: true });
 });
@@ -501,6 +504,105 @@ test("network: an unparseable baseUrl is reported without its query string", asy
 	const text = JSON.stringify(rows);
 	assert.doesNotMatch(text, /sk-live-pasted/);
 	assert.match(text, /invalid baseUrl/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: a baseUrl with no scheme is invalid, not an invented DNS failure", async () => {
+	// `localhost:11434/v1` parses as scheme `localhost:` with an opaque path, so
+	// the probe printed "null unreachable" and the DNS check reported that the
+	// empty string does not resolve.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { ollama: { baseUrl: "localhost:11434/v1" } } });
+	const rows = byId(await network.run(buildContext({ agentDir: root })));
+	const text = JSON.stringify(rows);
+	assert.match(text, /invalid baseUrl/);
+	assert.doesNotMatch(text, /null unreachable/);
+	// The host was never parsed, so there is no host to look up.
+	assert.equal(rows.dns.status, "skip");
+	assert.match(rows.dns.detail, /no provider host to resolve/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: a literal percent in userinfo does not crash the whole group", async () => {
+	// decodeURIComponent throws on `p%ss`, and the throw escaped run(): the whole
+	// Network group became one crash row blaming pi-checkup for a config typo.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { gw: { baseUrl: "https://me:p%ss@127.0.0.1:9/v1" } } });
+	const rows = await network.run(buildContext({ agentDir: root }));
+	const text = JSON.stringify(rows);
+	assert.doesNotMatch(text, /crash:/);
+	assert.doesNotMatch(text, /p%ss/);
+	assert.match(text, /not valid percent-encoding/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: a non-string baseUrl is reported instead of denied", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { broken: { baseUrl: 1234 }, ok: { baseUrl: "http://127.0.0.1:9/v1" } } });
+	const rows = byId(await network.run(buildContext({ agentDir: root })));
+	assert.equal(rows["baseUrl-shape"].status, "warn");
+	assert.match(rows["baseUrl-shape"].detail, /broken \(number\)/);
+	assert.doesNotMatch(rows.providers.detail, /no provider with a baseUrl/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: a configured proxy is used, and its password is not printed", async () => {
+	// Node's fetch ignores https_proxy entirely, so the probe has to go through
+	// curl. The point of this test is the credential, not the HTTP code.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { gw: { baseUrl: "http://127.0.0.1:9/v1" } } });
+	const ctx = buildContext({ agentDir: root, env: { ...process.env, https_proxy: "http://alice:sekrit@127.0.0.1:9" } });
+	const rows = byId(await network.run(ctx));
+	const text = JSON.stringify(rows);
+	assert.doesNotMatch(text, /sekrit/);
+	assert.doesNotMatch(text, /alice/);
+	assert.match(JSON.stringify(rows.providers), /127\.0\.0\.1:9/);
+	assert.notEqual(rows.providers.status, "ok", "a dead proxy cannot make an endpoint look healthy");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: a source carrying a token is not printed", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: ["git:https://ghp_sekrit@github.com/me/private"] });
+	const rows = await packages.run(buildContext({ agentDir: root }));
+	const text = JSON.stringify(rows);
+	assert.doesNotMatch(text, /ghp_sekrit/);
+	assert.match(text, /github\.com/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("binaries: a non-array packages value does not take the group down", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: { a: "npm:x" } });
+	const rows = await binaries.run(buildContext({ agentDir: root }));
+	assert.ok(rows.length > 0);
+	assert.ok(rows.every((r) => !String(r.id).startsWith("crash:")));
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("binaries: no declared command is a skip, not a green tick", async () => {
+	const root = tmpRoot();
+	installPkg(root, "ext-only", { pi: { extensions: ["./i.js"] } }, ["i.js"]);
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:ext-only"] });
+	// A .bin directory has to exist for the shadowing pass to run at all.
+	fs.mkdirSync(path.join(root, "npm", "node_modules", ".bin"), { recursive: true });
+	const rows = byId(await binaries.run(buildContext({ agentDir: root })));
+	assert.equal(rows.shadowed.status, "skip");
+	assert.match(rows.shadowed.detail, /no package command declared/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: the same source in two shapes is reported without offering dedupe", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:a", { source: "npm:a", enabled: false }] });
+	const rows = byId(await config.run(buildContext({ agentDir: root })));
+	assert.equal(rows.duplicates.status, "warn");
+	assert.match(rows.duplicates.detail, /two different shapes/);
+	assert.equal(rows.duplicates.fix, undefined, "dedupe refuses these, so the hint must not offer it");
 	fs.rmSync(root, { recursive: true, force: true });
 });
 

@@ -81,13 +81,18 @@ export default function checkupExtension(pi) {
 			// reason the CLI's exit code does: reporting the pre-repair findings
 			// under a "repaired" message tells the user the fix did nothing.
 			let verdict = renderVerdict(results);
+			// The label has to follow the fact, not the intent: when every repair
+			// failed there was no second run, and calling the pre-repair verdict
+			// "re-checked" is the same contradiction the CLI avoids.
+			let rechecked = false;
 			if (applied.some((a) => a.ok)) {
 				const after = await runChecks(buildContext({ pi, cwd: ctx.cwd }));
 				verdict = renderVerdict(after);
+				rechecked = true;
 				ctx.ui.setStatus?.("checkup", verdict);
 			}
 			ctx.ui.notify(
-				`${report}\n\nRepairs\n${log || "  (nothing applied)"}\n\n${verdict}  ·  re-checked after repair\n\nRun /reload so Pi picks up the changes.`,
+				`${report}\n\nRepairs\n${log || "  (nothing applied)"}\n\n${verdict}${rechecked ? "  ·  re-checked after repair" : ""}\n\nRun /reload so Pi picks up the changes.`,
 				"info",
 			);
 		},

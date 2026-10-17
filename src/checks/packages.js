@@ -7,7 +7,7 @@
 // never committed.
 import path from "node:path";
 import fs from "node:fs";
-import { globExists, makeRow, readJson, resolvePackageDir, sourceOf } from "../util.js";
+import { globExists, makeRow, readJson, redactSource, resolvePackageDir, sourceOf } from "../util.js";
 
 export const group = "Packages";
 
@@ -65,12 +65,12 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 			// A null, a number or an object without `source` is a malformed entry, not
 			// a source "resolved by Pi itself": the old path pushed `null` into the
 			// unverifiable list and printed "2 source(s) ... null, null".
-			badSpecs.push(JSON.stringify(spec) ?? String(spec));
+			badSpecs.push(redactSource(JSON.stringify(spec) ?? String(spec)));
 			continue;
 		}
 		const dir = resolvePackageDir(source, root);
 		if (!dir) {
-			unverifiable.push(source);
+			unverifiable.push(redactSource(source));
 			continue;
 		}
 		let stat;
@@ -82,18 +82,18 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 			// process simply cannot see it; treating those as missing turned a
 			// permission problem into a destructive repair.
 			const code = e?.code;
-			if (code === "ENOENT" || code === "ENOTDIR") missingDir.push(String(source));
-			else unreadableDir.push(`${source} (${code ?? "error"})`);
+			if (code === "ENOENT" || code === "ENOTDIR") missingDir.push(redactSource(source));
+			else unreadableDir.push(`${redactSource(source)} (${code ?? "error"})`);
 			continue;
 		}
 		if (!stat.isDirectory()) {
-			missingDir.push(String(source));
+			missingDir.push(redactSource(source));
 			continue;
 		}
 		present++;
 		const manifest = readJson(path.join(dir, "package.json"));
 		if (!manifest.ok) {
-			brokenManifest.push(String(source));
+			brokenManifest.push(redactSource(source));
 			continue;
 		}
 		manifestRead++;
@@ -105,11 +105,11 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		// this module — which the runner turns into one "check crashed" row, losing
 		// every other package finding.
 		const list = raw.filter((entry) => typeof entry === "string");
-		if (list.length !== raw.length) badExtensions.push(String(source));
+		if (list.length !== raw.length) badExtensions.push(redactSource(source));
 		if (!list.length) continue; // declared nothing verifiable
 		entryChecked++;
 		const missing = list.filter((entry) => !globExists(dir, entry));
-		if (missing.length) missingEntry.push(`${source} -> ${missing.join(", ")}`);
+		if (missing.length) missingEntry.push(`${redactSource(source)} -> ${missing.join(", ")}`);
 	}
 
 	const preview = (list, n) => list.slice(0, n).join(", ") + (list.length > n ? ", ..." : "");

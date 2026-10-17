@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
-import { bareHost, exists, humanBytes, isWindows, sh } from "../util.js";
+import { bareHost, curlProbe, exists, humanBytes, isWindows, proxyFromEnv, redactProxy, sh } from "../util.js";
 
 export const group = "Runtime";
 
@@ -111,7 +111,9 @@ export async function run({ offline = false, agentDir: root, env = process.env }
 	// the only version of this check that matches the promise that pi-checkup
 	// generates no traffic of its own. Set PI_CHECKUP_PROBE_URL to opt into a
 	// real end-to-end forwarding test through the proxy.
-	const proxy = env.https_proxy || env.HTTPS_PROXY || env.HTTP_PROXY || env.http_proxy;
+	// Shared with the provider probe: the two used to disagree about what "a proxy
+	// is configured" means, so one reported a proxy the other silently ignored.
+	const proxy = proxyFromEnv(env);
 	if (!proxy) {
 		results.push({ group, id: "proxy", title: "proxy", status: "skip", detail: "none configured" });
 	} else if (offline) {
@@ -130,39 +132,11 @@ export async function run({ offline = false, agentDir: root, env = process.env }
 }
 
 const DEFAULT_PROXY_PORT = { "http:": 80, "https:": 443, "socks5:": 1080, "socks5h:": 1080, "socks4:": 1080 };
-/**
- * A proxy URL safe to put in a report.
- *
- * Corporate proxies are routinely configured as http://user:password@host:port,
- * so the raw env value must never reach the terminal, the JSON payload, or a CI
- * log — which is exactly where --offline used to print it. Scheme, host and port
- * are all the user needs to recognise their own proxy.
- */
-export function redactProxy(raw) {
-	const text = String(raw ?? "").trim();
-	if (!text) return "(empty)";
 
-	// Only trust the URL parser when the value actually looks like a URL. Without
-	// "//", `alice:pw@host:8080` parses as scheme "alice:" and the parser returns
-	// a meaningless origin instead of a scrubbed one.
-	if (text.includes("://")) {
-		try {
-			const url = new URL(text);
-			if (url.hostname) {
-				// Only the port the user actually wrote: printing a default :443 next to
-				// a URL that has no port makes the report disagree with the config the
-				// user is looking at, which is the one thing this string is for.
-				return `${url.protocol}//${url.hostname}${url.port ? `:${url.port}` : ""}`;
-			}
-		} catch {
-			// Fall through to the textual scrub below.
-		}
-	}
-
-	// Everything before the last "@" is a credential; everything after it is the
-	// proxy the user needs to recognise.
-	return text.slice(text.lastIndexOf("@") + 1).replace(/^[a-z0-9+.-]+:\/\//i, "") || "(configured)";
-}
+// Re-exported so the report and the tests have one redaction primitive to reach
+// for, and so the implementation lives next to redactUrl rather than beside the
+// check that happened to need it first.
+export { redactProxy };
 
 /** Does something accept connections at this proxy's own address? */
 async function checkProxy(proxy, env = process.env) {
@@ -183,14 +157,19 @@ async function checkProxy(proxy, env = process.env) {
 	// real traffic through the proxy.
 	const probeUrl = env.PI_CHECKUP_PROBE_URL;
 	if (probeUrl) {
-		const probe = await probeThroughProxy(proxy, probeUrl);
+		const probe = await curlProbe(probeUrl, { proxy });
 		// A non-zero curl exit is not "curl is missing": curl prints 000 to stdout
 		// for a refused or timed-out connection and exits 7 or 28. Reading only
 		// sh().ok turned a dead proxy into "skipped, tool unavailable".
+		if (probe.setupFailed) {
+			// The request never left the machine, so accusing the proxy would be a
+			// finding this check did not establish.
+			return row("skip", `configured (${shown}); the probe could not be set up: ${probe.error}`);
+		}
 		if (probe.missing) {
 			return row("skip", `configured (${shown}); curl is not installed so forwarding was not tested`);
 		}
-		const code = probe.out.trim();
+		const code = probe.code;
 		const reachable = code !== "000" && code !== "";
 		return row(
 			reachable ? "ok" : "fail",
@@ -203,42 +182,6 @@ async function checkProxy(proxy, env = process.env) {
 	return probe.ok
 		? row("ok", `${shown} accepting connections`, "Set PI_CHECKUP_PROBE_URL to test real forwarding through it.")
 		: row("fail", `nothing listening on ${shown} (${probe.error})`, "The proxy process is probably not running.");
-}
-
-/**
- * Run curl through the proxy, passing the proxy URL in a 0600 config file.
- *
- * Not as `-x <proxy>`: that puts any embedded password in argv, where every
- * other user on the box can read it out of `ps` and /proc.
- */
-async function probeThroughProxy(proxy, probeUrl) {
-	let configFile;
-	try {
-		configFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-checkup-")), "curl.conf");
-		// curl config syntax: quoted values, backslash escapes. Line breaks are
-		// stripped first: a newline in the value would end the directive and let the
-		// rest of the string start a new one.
-		const quoted = String(proxy)
-			.replace(/[\r\n]/g, "")
-			.replace(/\\/g, "\\\\")
-			.replace(/"/g, '\\"');
-		fs.writeFileSync(configFile, `proxy = "${quoted}"\n`, { mode: 0o600 });
-	} catch {
-		return { out: "", err: "could not create a temp config file", missing: false };
-	}
-	try {
-		return await sh(
-			"curl",
-			["-s", "-o", isWindows ? "NUL" : "/dev/null", "-w", "%{http_code}", "--max-time", "6", "--config", configFile, probeUrl],
-			8000,
-		);
-	} finally {
-		try {
-			fs.rmSync(path.dirname(configFile), { recursive: true, force: true });
-		} catch {
-			// Best effort; the file is 0600 and inside the OS temp dir.
-		}
-	}
 }
 
 /** Plain TCP connect, so the proxy check causes no third-party traffic. */

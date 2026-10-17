@@ -143,6 +143,12 @@ function unreadable(target, parsed) {
 }
 
 export function applyRestoreConfig(target) {
+	// Re-read before overwriting. The decision to restore was made when the check
+	// ran, and in-session the confirmation prompt can sit open indefinitely: if the
+	// user repaired the file by hand in that window, writing the older backup over
+	// it would undo the fix.
+	const current = readJson(target);
+	if (current.ok) return { ok: false, message: `${path.basename(target)} is valid JSON again — nothing to restore` };
 	const backup = newestBackup(target);
 	if (!backup) return { ok: false, message: `no backup found for ${path.basename(target)}` };
 	const parsed = readJson(backup);
@@ -157,34 +163,52 @@ export function applyRestoreConfig(target) {
 	};
 }
 
-/** Collapse duplicate `packages` entries, preserving the first occurrence. */
+/**
+ * Collapse duplicate `packages` entries, preserving the first occurrence.
+ *
+ * Only an entry byte-identical to the one already kept is dropped. Two entries
+ * for the same source in different shapes — `"npm:a"` next to
+ * `{"source": "npm:a", "enabled": false}` — carry different intent, and deleting
+ * the second one silently changed what Pi loads. The backup would have made it
+ * recoverable, but a repair that needs its backup is not a repair.
+ */
 export function applyDedupePackages(target) {
 	const settings = readJson(target);
 	if (!settings.ok) return unreadable(target, settings);
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to dedupe" };
 
-	const seen = new Set();
+	const seen = new Map();
 	const kept = [];
+	let removed = 0;
+	let mixed = 0;
 	for (const spec of settings.data.packages) {
 		const source = sourceOf(spec);
 		if (typeof source !== "string") {
 			kept.push(spec);
 			continue;
 		}
-		if (seen.has(source)) continue;
-		seen.add(source);
+		if (!seen.has(source)) {
+			seen.set(source, spec);
+			kept.push(spec);
+			continue;
+		}
+		if (JSON.stringify(seen.get(source)) === JSON.stringify(spec)) {
+			removed++;
+			continue;
+		}
+		mixed++;
 		kept.push(spec);
 	}
 
-	const removed = settings.data.packages.length - kept.length;
-	if (removed === 0) return { ok: true, message: "nothing to dedupe" };
+	const suffix = mixed ? ` (${mixed} entr${mixed === 1 ? "y" : "ies"} share a source but differ in shape and were left alone)` : "";
+	if (removed === 0) return { ok: true, message: `nothing to dedupe${suffix}` };
 
 	const backup = copyBackup(target);
 	settings.data.packages = kept;
 	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
 		ok: true,
-		message: `removed ${removed} duplicate entr${removed === 1 ? "y" : "ies"} from ${path.basename(target)} (backup: ${path.basename(backup)})`,
+		message: `removed ${removed} duplicate entr${removed === 1 ? "y" : "ies"} from ${path.basename(target)}${suffix} (backup: ${path.basename(backup)})`,
 	};
 }
 

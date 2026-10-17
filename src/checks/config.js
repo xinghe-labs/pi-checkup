@@ -2,7 +2,7 @@
 // entries that silently cancel each other out?
 import fs from "node:fs";
 import path from "node:path";
-import { exists, makeRow, newestBackup, readJson, sourceOf } from "../util.js";
+import { exists, makeRow, newestBackup, readJson, redactSource, sourceOf } from "../util.js";
 
 export const group = "Config";
 
@@ -152,30 +152,49 @@ export async function run({
 	// Two identical sources do not fail loudly; the package just loads twice and
 	// the second registration can shadow the first.
 	if (Array.isArray(settings?.packages)) {
-		const seen = new Set();
+		// Two entries for one source are not always the same entry twice:
+		// `"npm:a"` next to `{"source": "npm:a", "enabled": false}` says something
+		// the plain string does not. The repair only drops byte-identical repeats,
+		// so the check has to make the same distinction or its hint names a repair
+		// that then answers "nothing to dedupe".
+		const seen = new Map();
 		const duplicates = new Set();
+		const mixedShapes = new Set();
 		for (const spec of settings.packages) {
 			const source = sourceOf(spec);
 			if (typeof source !== "string") continue;
-			if (seen.has(source)) duplicates.add(source);
-			seen.add(source);
+			if (seen.has(source)) {
+				if (JSON.stringify(seen.get(source)) === JSON.stringify(spec)) duplicates.add(source);
+				else mixedShapes.add(source);
+			} else {
+				seen.set(source, spec);
+			}
 		}
 		// Deduping the file is only correct when the file is what the report read;
 		// in-session the list may have come from the running process. The hint has
 		// to follow the same rule, or it names a command that then answers
 		// "Nothing to repair automatically."
 		const canDedupe = settingsSource !== "runtime" && Boolean(settingsFile);
-		results.push(
-			duplicates.size
-				? row("duplicates", "duplicate packages", "warn", `${[...duplicates].join(", ")} listed more than once`, {
-						hint: canDedupe
-							? `Run \`${fixCommand}\` to collapse them to one entry each.`
-							: "Remove the repeated entries from settings.json by hand, or run `npx pi-checkup --fix --yes` with Pi stopped.",
-						fix: canDedupe ? "dedupe-packages" : undefined,
-						fixTarget: canDedupe ? settingsFile : undefined,
-					})
-				: row("duplicates", "duplicate packages", "ok", "none"),
-		);
+		const listed = [...duplicates, ...mixedShapes].map(redactSource);
+		if (!listed.length) {
+			results.push(row("duplicates", "duplicate packages", "ok", "none"));
+		} else {
+			const parts = [];
+			if (duplicates.size) parts.push(`${duplicates.size} listed twice`);
+			if (mixedShapes.size) parts.push(`${mixedShapes.size} listed in two different shapes`);
+			results.push(
+				row("duplicates", "duplicate packages", "warn", `${listed.join(", ")}: ${parts.join(", ")}`, {
+					hint:
+						mixedShapes.size && !duplicates.size
+							? "Dedupe leaves entries that differ alone, because they say different things. Keep the one you meant."
+							: canDedupe
+								? `Run \`${fixCommand}\` to collapse the identical repeats to one entry each.`
+								: "Remove the repeated entries from settings.json by hand, or run `npx pi-checkup --fix --yes` with Pi stopped.",
+					fix: canDedupe && duplicates.size ? "dedupe-packages" : undefined,
+					fixTarget: canDedupe && duplicates.size ? settingsFile : undefined,
+				}),
+			);
+		}
 	}
 
 	// --- environment references --------------------------------------------
