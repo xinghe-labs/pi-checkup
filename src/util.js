@@ -392,39 +392,63 @@ export function proxyFromEnv(env = process.env) {
  * `proxy` natively, and this package already depends on it for the opt-in
  * forwarding test.
  *
- * The proxy URL and every header go in a 0600 config file, never in argv:
- * `-x`/`-H` on the command line are readable by every other user on the box
- * through `ps` and /proc, and both routinely carry a credential.
+ * The proxy URL and every header go in a config file created with mode 0600 —
+ * a no-op on Windows, where the per-user temp directory ACL is what protects it
+ * — and never in argv: `-x`/`-H` on the command line are readable by every other
+ * user on the box through `ps` and /proc, and both routinely carry a credential.
  */
+export function curlConfig({ url, proxy, headers = {} }) {
+	// curl config syntax: quoted values, backslash escapes. Line breaks are
+	// stripped first: a newline in the value would end the directive and let the
+	// rest of the string start a new one.
+	const quote = (value) =>
+		String(value)
+			.replace(/[\r\n]/g, "")
+			.replace(/\\/g, "\\\\")
+			.replace(/"/g, '\\"');
+	const lines = [];
+	// The URL goes in the config file too: it can carry a query string, and argv
+	// is world-readable through `ps`. curl accepts `url = "…"`.
+	lines.push(`url = "${quote(url)}"`);
+	if (proxy) lines.push(`proxy = "${quote(proxy)}"`);
+	for (const [name, value] of Object.entries(headers)) {
+		if (value === undefined || value === null) continue;
+		lines.push(`header = "${quote(`${name}: ${value}`)}"`);
+	}
+	return `${lines.join("\n")}\n`;
+}
+
+/** curl's argv for one probe. Exported so a test can prove what is not in it. */
+export function curlArgs(configFile, maxTime = 6) {
+	return [
+		// -q has to be first: it stops curl reading a ~/.curlrc that could inject
+		// options — including a different proxy than the one being tested.
+		"-q",
+		// -sS: quiet progress, but still print the failure reason to stderr.
+		"-sS",
+		"-o",
+		isWindows ? "NUL" : "/dev/null",
+		"-w",
+		"%{http_code}",
+		"--max-time",
+		String(maxTime),
+		// An empty value disables NO_PROXY for this request. The check exists to
+		// answer "does this proxy work", and a NO_PROXY entry in the environment
+		// would send the probe around it while the row still said "through <proxy>".
+		"--noproxy",
+		"",
+		"--config",
+		configFile,
+	];
+}
+
 export async function curlProbe(url, { proxy, headers = {}, maxTime = 6, timeout = 8000 } = {}) {
 	let dir;
 	try {
 		dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-checkup-"));
 		const configFile = path.join(dir, "curl.conf");
-		// curl config syntax: quoted values, backslash escapes. Line breaks are
-		// stripped first: a newline in the value would end the directive and let
-		// the rest of the string start a new one.
-		const quote = (value) =>
-			String(value)
-				.replace(/[\r\n]/g, "")
-				.replace(/\\/g, "\\\\")
-				.replace(/"/g, '\\"');
-		const lines = [];
-		// The URL goes in the config file too: it can carry a query string, and
-		// argv is world-readable through `ps`. curl accepts `url = "…"`.
-		lines.push(`url = "${quote(url)}"`);
-		if (proxy) lines.push(`proxy = "${quote(proxy)}"`);
-		for (const [name, value] of Object.entries(headers)) {
-			if (value === undefined || value === null) continue;
-			lines.push(`header = "${quote(`${name}: ${value}`)}"`);
-		}
-		fs.writeFileSync(configFile, `${lines.join("\n")}\n`, { mode: 0o600 });
-		const res = await sh(
-			"curl",
-			// -sS: quiet progress, but still print the failure reason to stderr.
-			["-sS", "-o", isWindows ? "NUL" : "/dev/null", "-w", "%{http_code}", "--max-time", String(maxTime), "--config", configFile],
-			timeout,
-		);
+		fs.writeFileSync(configFile, curlConfig({ url, proxy, headers }), { mode: 0o600 });
+		const res = await sh("curl", curlArgs(configFile, maxTime), timeout);
 		// curl prints 000 for a refused or timed-out connection and exits 7 or 28.
 		// Reading only `ok` turned a dead proxy into "skipped, tool unavailable".
 		return { missing: res.missing === true, code: (res.out ?? "").trim(), error: res.ok ? "" : String(res.err ?? "").trim() };
@@ -565,11 +589,21 @@ export function redactProxy(raw) {
  */
 export function redactSource(spec) {
 	const text = String(spec ?? "");
-	const at = text.indexOf("://");
-	if (at === -1) return scrubCredentials(text);
-	const scheme = text.slice(0, at + 3);
-	const rest = text.slice(at + 3);
-	return scrubCredentials(`${scheme}${rest}`);
+	if (text.includes("://")) return scrubCredentials(text);
+	// `npm:pkg`, `git:…`, `file:./x`: a scheme is what makes a string a source,
+	// and scrubbing is enough for the shapes that carry a credential inside one.
+	if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return scrubCredentials(text);
+	// No scheme, but a path: `./ext/single.js` and `/opt/ext` are local sources
+	// with no credential in them, and hiding them made a real finding unreadable.
+	const pathLike =
+		!text.includes("@") && (/^(\.{0,2}\/|\/|~\/)/.test(text) || /^[a-z0-9._-]+(\/[a-z0-9._-]+)+$/i.test(text));
+	if (pathLike) return scrubCredentials(text);
+	// Anything else is not a source. It may be a credential pasted into the wrong
+	// field — `sk-ant-…` in the packages array — and scrubCredentials only knows
+	// how to hide userinfo and query strings, so the value used to reach the
+	// report, the TUI notification and `--json` verbatim. `redactUrl` already
+	// keeps a host-shaped value and hides everything else.
+	return redactUrl(text);
 }
 
 /**

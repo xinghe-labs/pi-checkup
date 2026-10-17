@@ -159,6 +159,7 @@ export function applyRestoreConfig(target) {
 	writeAtomic(target, fs.readFileSync(backup, "utf8"));
 	return {
 		ok: true,
+		changed: true,
 		message: `restored ${path.basename(target)} from ${path.basename(backup)} (broken copy kept as ${path.basename(aside)})`,
 	};
 }
@@ -180,7 +181,9 @@ export function applyDedupePackages(target) {
 	const plan = dedupePlan(settings.data.packages);
 	const suffix = (mixed) =>
 		mixed ? ` (${mixed} entr${mixed === 1 ? "y" : "ies"} share a source but differ in shape and were left alone)` : "";
-	if (!plan.removed) return { ok: true, message: `nothing to dedupe${suffix(plan.mixed)}` };
+	// `changed` is separate from `ok`: a repair can succeed at doing nothing, and
+	// the caller must not tell the user to restart Pi for a file it never wrote.
+	if (!plan.removed) return { ok: true, changed: false, message: `nothing to dedupe${suffix(plan.mixed)}` };
 
 	// The read above already happened after the confirmation prompt, and every
 	// step from here to writeAtomic is synchronous, so the file cannot change in
@@ -192,6 +195,7 @@ export function applyDedupePackages(target) {
 	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
 		ok: true,
+		changed: true,
 		message: `removed ${plan.removed} duplicate entr${plan.removed === 1 ? "y" : "ies"} from ${path.basename(target)}${suffix(plan.mixed)} (backup: ${path.basename(backup)})`,
 	};
 }
@@ -240,7 +244,7 @@ export function applyPruneMissingPackages(target, root) {
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to prune" };
 
 	const plan = prunePlan(settings.data.packages, root);
-	if (!plan.removed.length) return { ok: true, message: "nothing to prune" };
+	if (!plan.removed.length) return { ok: true, changed: false, message: "nothing to prune" };
 	// A wrong agent directory — a mistyped PI_CODING_AGENT_DIR, a second profile,
 	// a Pi layout that keeps packages elsewhere — makes every entry look missing.
 	// Emptying the list would leave Pi booting with no packages and no error, so
@@ -265,6 +269,7 @@ export function applyPruneMissingPackages(target, root) {
 	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
 		ok: true,
+		changed: true,
 		message: `removed ${plan.removed.length} entr${plan.removed.length === 1 ? "y" : "ies"} with no directory on disk (${plan.removed.slice(0, 3).join(", ")}${plan.removed.length > 3 ? ", ..." : ""}); backup: ${path.basename(backup)}`,
 	};
 }

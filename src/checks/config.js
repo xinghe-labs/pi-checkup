@@ -172,7 +172,11 @@ export async function run({
 				? "settings.json not found — nothing to compare"
 				: "settings.json could not be inspected";
 		} else if (packageList === undefined) why = "no package list in settings.json";
-		results.push(row("duplicates", "duplicate packages", "skip", why));
+		// A `packages` value that is present and not a list is a fault in the
+		// config, not an absence — packages.js reports the same value as `warn`,
+		// and one defect with two statuses made the report contradict itself.
+		const faulty = settings !== undefined && settings !== null && packageList !== undefined;
+		results.push(row("duplicates", "duplicate packages", faulty ? "warn" : "skip", why));
 	} else {
 		// Two entries for one source are not always the same entry twice:
 		// `"npm:a"` next to `{"source": "npm:a", "enabled": false}` says something
@@ -200,11 +204,13 @@ export async function run({
 		const listed = [...duplicates, ...mixedShapes].map(redactSource);
 		if (!listed.length) {
 			// Zero entries compared is not a pass: "none" over an empty list is the
-			// same vacuous green tick the rest of this file avoids.
+			// same vacuous green tick the rest of this file avoids. Counted by
+			// comparable entries rather than by the list length, because
+			// `[null, 42]` has a length and nothing to compare.
 			results.push(
-				settings.packages.length
+				seen.size
 					? row("duplicates", "duplicate packages", "ok", "none")
-					: row("duplicates", "duplicate packages", "skip", "no package entries to compare"),
+					: row("duplicates", "duplicate packages", "skip", "no comparable package entries"),
 			);
 		} else {
 			const parts = [];

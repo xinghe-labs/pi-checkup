@@ -56,7 +56,7 @@ function danglingRow(dangling, linkCount, entryCount, unreadable = 0) {
 	// Nothing to inspect is not a pass: an empty .bin used to print a green tick
 	// over zero entries.
 	if (!entryCount) {
-		return { group, id: "dangling", title: "dangling links", status: "skip", detail: "no entries in .bin to check" };
+		return { group, id: "dangling", title: "dangling links", status: "skip", detail: "no command links in .bin to check" };
 	}
 	// npm writes shims as plain files on Windows, so a populated .bin can contain
 	// zero symlinks. Counting entries instead of links printed "19 entries all

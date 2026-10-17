@@ -126,6 +126,10 @@ async function main() {
 	});
 	process.stdout.write(`${report}\n`);
 
+	// Set before the first byte of the report, so a consumer that closes the pipe
+	// mid-report (`pi-checkup | head -3`) still exits with the code the report
+	// implies instead of a misleading 0.
+	process.exitCode = results.some((r) => r.status === "fail") ? 1 : 0;
 	const fixable = results.filter((r) => r.fix && r.fixTarget);
 	let finalResults = results;
 	if (opts.fix) {
@@ -139,9 +143,11 @@ async function main() {
 			const applied = await applyRepairs(fixable, { agentDir: ctx.agentDir });
 			process.stdout.write("\nRepairs\n");
 			for (const a of applied) process.stdout.write(`  ${a.ok ? "✓" : "✗"} ${a.message}\n`);
-			// Only when something was actually written: a refused repair changed
-			// nothing, so telling the user to restart Pi is noise.
-			if (applied.some((a) => a.ok)) process.stdout.write("\nRestart Pi so it picks up the changes.\n");
+			// Only when something was actually written: a refused repair, or one
+			// that found nothing to do by the time it ran, changed nothing, so
+			// telling the user to restart Pi is noise.
+			const wrote = applied.some((a) => a.changed);
+			if (wrote) process.stdout.write("\nRestart Pi so it picks up the changes.\n");
 			// Re-check: the exit code has to describe the tree as it is now, not as
 			// it was before the repair. Exiting 1 right after fixing the only
 			// failure breaks every `&&` chain that calls this.
@@ -150,7 +156,7 @@ async function main() {
 			// parsed on construction, so re-running the checks against the old one
 			// reports the entries the repair just removed. That is how a successful
 			// prune still exited 1.
-			if (applied.some((a) => a.ok)) {
+			if (wrote) {
 				finalResults = await runChecks(buildContext({ cwd: process.cwd(), offline: opts.offline }));
 			}
 		}
@@ -174,12 +180,19 @@ async function main() {
 // Anything else is a real write failure, and it goes through the same scrubbing
 // as a caught exception: an uncaught throw from an event listener printed a raw
 // stack, which is the one place a config value can slip out unredacted.
+let reported = false;
 const writeFailure = (e) => {
+	// A write error on stderr is itself reported to stderr, so without this guard
+	// a broken stderr re-enters the handler instead of exiting.
+	if (reported) return;
+	reported = true;
 	process.stderr.write(`pi-checkup crashed: ${scrubCredentials(String(e?.stack ?? e))}\n`);
 	process.exitCode = 2;
 };
 process.stdout.on("error", (e) => {
-	if (e?.code === "EPIPE") process.exit(0);
+	// A consumer that stopped reading is a normal exit, but not a successful one:
+	// `pi-checkup | head -1` over failed checks must still exit 1.
+	if (e?.code === "EPIPE") process.exit(process.exitCode ?? 0);
 	writeFailure(e);
 });
 process.stderr.on("error", (e) => {

@@ -157,7 +157,11 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 				title: "cleartext auth",
 				status: "warn",
 				detail: `${cleartext.join(", ")} use http:// with credentials configured${queryWithheld.length ? ` (query string on ${queryWithheld.join(", ")} withheld)` : ""}`,
-				hint: "Switch the baseUrl to https://, or use a host on localhost. The probe was sent without the credential, which is also why a 401 here is not a broken endpoint.",
+				hint: `Switch the baseUrl to https://, or use a host on localhost. ${
+					queryWithheld.length
+						? "Endpoints carrying a query string were left unprobed; the rest were probed without the credential, so a 401 there is not a broken endpoint."
+						: "The probe was sent without the credential, which is also why a 401 here is not a broken endpoint."
+				}`,
 			}
 		: null;
 
@@ -352,6 +356,13 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 async function probeEndpoint(url, { headers, proxy }) {
 	if (!proxy) {
 		const res = await timedFetch(url.toString(), { headers });
+		// A request Node refuses to construct — a header value with a newline or a
+		// character outside Latin-1 — never opens a socket. Blaming the endpoint
+		// for it is the same mistake the curl path already avoids with
+		// `setupFailed`, and the config is where the fix is.
+		if (!res.status && /Headers|invalid header|Failed to parse URL|Invalid value/i.test(res.error ?? "")) {
+			return { status: "skip", detail: `not probed: ${scrubCredentials(res.error)}` };
+		}
 		// 401/403 means the endpoint is up and merely disagrees about auth, which
 		// is a configuration problem, not a reachability problem.
 		const alive = res.ok && (res.status === 200 || res.status === 401 || res.status === 403);

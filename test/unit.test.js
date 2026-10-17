@@ -13,7 +13,10 @@ import {
 	isLoopbackHost,
 	newestBackup,
 	ownerOf,
+	curlArgs,
+	curlConfig,
 	curlProbe,
+	redactSource,
 	redactUrl,
 	resolvePackageDir,
 	sameCommand,
@@ -335,4 +338,39 @@ test("globExists honours an absolute pattern instead of re-rooting it", () => {
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("redactSource keeps a local path and hides a pasted token", () => {
+	// A package source is not always a URL: `./ext/single.js` and `/opt/ext` are
+	// local entries, and hiding them made a real "points at a file" finding
+	// unreadable. A bare token is the opposite case — no scheme, no path, no
+	// host — and it is the one string that must never be echoed.
+	assert.equal(redactSource("./ext/single.js"), "./ext/single.js");
+	assert.equal(redactSource("/opt/ext"), "/opt/ext");
+	assert.equal(redactSource("ext/single.js"), "ext/single.js");
+	assert.equal(redactSource("npm:pkg"), "npm:pkg");
+	assert.equal(redactSource("git:https://ghp_sekrit@github.com/me/x"), "git:https://***@github.com/me/x");
+	assert.equal(redactSource("sk-ant-api03-AbC123"), "(unparsable value)");
+	assert.equal(redactSource("sk-ant-api03-AbC123?x=1"), "(unparsable value)");
+});
+
+test("curl never carries the URL, proxy or headers on its command line", () => {
+	// argv is world-readable through `ps`, and the URL can carry a query string
+	// while the proxy and headers routinely carry credentials.
+	const url = "https://user:sekrit@api.example.com/v1/models?key=sk-live";
+	const proxy = "http://alice:s3cr3t@127.0.0.1:8080";
+	const headers = { Authorization: "Bearer sk-live-token" };
+	const config = curlConfig({ url, proxy, headers });
+	const args = curlArgs("/tmp/curl.conf").join(" ");
+
+	assert.match(config, /url = "https:\/\/user:sekrit@api\.example\.com\/v1\/models\?key=sk-live"/);
+	assert.match(config, /proxy = "http:\/\/alice:s3cr3t@127\.0\.0\.1:8080"/);
+	assert.match(config, /header = "Authorization: Bearer sk-live-token"/);
+	for (const secret of ["sekrit", "s3cr3t", "sk-live", "api.example.com"]) {
+		assert.doesNotMatch(args, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	}
+	// -q has to be the very first argument or curl still reads ~/.curlrc, and an
+	// inherited NO_PROXY would route the probe around the proxy being tested.
+	assert.equal(curlArgs("/tmp/curl.conf")[0], "-q");
+	assert.match(args, /--noproxy {2}/);
 });

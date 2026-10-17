@@ -255,6 +255,28 @@ test("prune resolves package directories against the root it is given", async ()
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("a repair that finds nothing to do reports that it changed nothing", async () => {
+	// `ok` means "did not refuse", not "wrote a file". Callers ask for a reload or
+	// a Pi restart only when something changed, so the difference has to be
+	// visible in the result rather than inferred from the message text.
+	const { applyDedupePackages, applyPruneMissingPackages } = await import("../src/repair.js");
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:present"] }, null, 2));
+	fs.mkdirSync(path.join(dir, "npm", "node_modules", "present"), { recursive: true });
+
+	const dedupe = applyDedupePackages(file);
+	assert.equal(dedupe.ok, true);
+	assert.equal(dedupe.changed, false);
+	assert.match(dedupe.message, /nothing to dedupe/);
+	const prune = applyPruneMissingPackages(file, dir);
+	assert.equal(prune.ok, true);
+	assert.equal(prune.changed, false);
+	assert.match(prune.message, /nothing to prune/);
+	assert.equal(fs.readdirSync(dir).filter((f) => f.includes("checkup-bak")).length, 0);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test("prune refuses when every entry it can resolve is missing", async () => {
 	// The guard used to compare against the whole list, and prune keeps `git:` and
 	// malformed entries by design — so one missing npm entry next to one git source

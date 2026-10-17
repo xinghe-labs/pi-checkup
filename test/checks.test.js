@@ -721,6 +721,38 @@ function healthyRoot() {
 	return root;
 }
 
+test("CLI: a closed pipe keeps the exit code the report implies", async () => {
+	// `pi-checkup | head -1` used to exit 0 over a failing run, which turns every
+	// `&&` chain that pipes this tool into a green build.
+	const { spawn } = await import("node:child_process");
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:gone"] });
+	const child = spawn(process.execPath, [CLI, "--offline"], {
+		env: {
+			...process.env,
+			PI_CODING_AGENT_DIR: root,
+			https_proxy: "",
+			HTTPS_PROXY: "",
+			http_proxy: "",
+			HTTP_PROXY: "",
+			all_proxy: "",
+			ALL_PROXY: "",
+		},
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	// Closed before the child has even loaded its modules, so its first write to
+	// stdout is an EPIPE rather than a buffered success.
+	child.stdout.destroy();
+	let stderr = "";
+	child.stderr.on("data", (chunk) => {
+		stderr += chunk;
+	});
+	const code = await new Promise((resolve) => child.on("exit", resolve));
+	assert.equal(code, 1, stderr);
+	assert.doesNotMatch(stderr, /crashed/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("CLI: a bad flag exits 2 and prints the reason", () => {
 	const { status, stderr } = runCli(healthyRoot(), ["--nope"]);
 	assert.equal(status, 2);
@@ -1201,7 +1233,7 @@ test("config: an empty package list is a skip for duplicates, not a pass", async
 	writeJson(path.join(root, "settings.json"), { packages: [] });
 	const rows = byId(await config.run(buildContext({ agentDir: root })));
 	assert.equal(rows.duplicates.status, "skip");
-	assert.match(rows.duplicates.detail, /no package entries to compare/);
+	assert.match(rows.duplicates.detail, /no comparable package entries/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -1216,5 +1248,134 @@ test("runtime: a proxy password containing @ still yields a host and port", asyn
 	assert.doesNotMatch(rows.proxy.detail, /without a usable host and port/);
 	assert.match(rows.proxy.detail, /127\.0\.0\.1:1/);
 	assert.doesNotMatch(rows.proxy.detail, /p@ss/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: a token pasted into the packages list is not printed", async () => {
+	// `redactSource` scrubs URLs, and this is not one: with no scheme and no path
+	// the whole string is the secret, so the report describes it instead.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: ["sk-ant-api03-AbC123", null, 42] });
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.doesNotMatch(JSON.stringify(rows), /sk-ant-api03-AbC123/);
+	assert.match(rows["entries-shape"].detail, /null, number 42/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: a list with nothing comparable in it is a skip, not a pass", async () => {
+	// The row keyed on the list length, so `[null, 42]` printed "none" over zero
+	// compared entries while packages.js warned about the same list.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [null, 42] });
+	const rows = byId(await config.run(buildContext({ agentDir: root })));
+	assert.equal(rows.duplicates.status, "skip");
+	assert.match(rows.duplicates.detail, /no comparable package entries/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: a packages value that is not a list is a warning, like packages.js says", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: { a: "npm:x" } });
+	const rows = byId(await config.run(buildContext({ agentDir: root })));
+	assert.equal(rows.duplicates.status, "warn");
+	assert.match(rows.duplicates.detail, /not a list/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: a registry of nameless entries is not a collision-free pass", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const pi = fakePi({ packages: [] }, [{ sourceInfo: { path: "/x/i.js" } }, {}]);
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
+	assert.equal(rows["tool-collisions"].status, "skip");
+	assert.match(rows["tool-collisions"].detail, /nothing registered to compare/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: a header fetch refuses to build is not a dead endpoint", async () => {
+	// `fetch` rejects on a header value containing a newline before any socket is
+	// opened. Reporting "unreachable" blamed the endpoint for a config fault.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { gw: { baseUrl: "http://127.0.0.1:9/v1", apiKey: "bad\nvalue" } },
+	});
+	const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
+	assert.equal(rows.providers.status, "skip");
+	assert.match(rows.providers.detail, /not probed/);
+	assert.doesNotMatch(rows.providers.detail, /unreachable/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: a cleartext endpoint with a query string is not contacted at all", async () => {
+	// Offline mode proves the row, not the wire. This one proves nothing was sent,
+	// and the endpoint has to be reachable-but-non-loopback for the claim to mean
+	// anything: the server listens on this machine's own LAN address, so a probe
+	// that was sent would arrive.
+	const lan = Object.values(os.networkInterfaces())
+		.flat()
+		.find((iface) => iface && iface.family === "IPv4" && !iface.internal);
+	if (!lan) return; // no non-loopback address to be the "other machine"
+	const http = await import("node:http");
+	let hits = 0;
+	const server = http.createServer((req, res) => {
+		hits += 1;
+		res.writeHead(200);
+		res.end();
+	});
+	await new Promise((resolve) => server.listen(0, "0.0.0.0", resolve));
+	const { port } = server.address();
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { gw: { baseUrl: `http://${lan.address}:${port}/v1?key=sk-live-query` } },
+	});
+	try {
+		const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
+		assert.equal(rows.providers.status, "skip");
+		assert.match(rows.providers.detail, /not probed/);
+		assert.equal(hits, 0, "the withheld query string must not reach the endpoint");
+	} finally {
+		server.close();
+	}
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("runtime: a proxy password containing @ is parsed without the offline shortcut", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const rows = byId(
+		await runtime.run(buildContext({ agentDir: root, env: { all_proxy: "alice:p@ss@127.0.0.1:1", https_proxy: "" } })),
+	);
+	assert.doesNotMatch(rows.proxy.detail, /without a usable host and port/);
+	assert.match(rows.proxy.detail, /127\.0\.0\.1:1/);
+	assert.equal(rows.proxy.status, "fail", rows.proxy.detail);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("runtime: a proxy that answers 407 did not forward the request", { skip: hasCurl() ? false : "curl is not installed" }, async () => {
+	// 407 is the proxy demanding its own credentials: the target was never
+	// contacted, so "forwarded a request" would be a claim this check cannot make.
+	const http = await import("node:http");
+	const server = http.createServer((req, res) => {
+		res.writeHead(407);
+		res.end();
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const { port } = server.address();
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const env = {
+		all_proxy: "",
+		https_proxy: `http://127.0.0.1:${port}`,
+		PI_CHECKUP_PROBE_URL: "http://example.invalid/v1/models",
+	};
+	try {
+		const rows = byId(await runtime.run(buildContext({ agentDir: root, env })));
+		assert.equal(rows.proxy.status, "warn", rows.proxy.detail);
+		assert.match(rows.proxy.detail, /not forwarded/);
+	} finally {
+		server.close();
+	}
 	fs.rmSync(root, { recursive: true, force: true });
 });

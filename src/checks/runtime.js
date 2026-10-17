@@ -217,12 +217,16 @@ async function checkProxy(proxy, env = process.env) {
 			return row("skip", `configured (${shown}); curl is not installed so forwarding was not tested`);
 		}
 		const code = probe.code;
-		const reachable = code !== "000" && code !== "";
-		return row(
-			reachable ? "ok" : "fail",
-			reachable ? `${shown} forwarded a request (HTTP ${code})` : `${shown} did not forward (HTTP ${code || "000"})`,
-			reachable ? undefined : "The proxy process is probably not running, or does not allow this target.",
-		);
+		const numeric = Number(code);
+		// A code is not proof of forwarding: 407 is the proxy demanding its own
+		// credentials and 502/503/504 are what it emits when it could not reach the
+		// target, so "forwarded a request" over those would be a claim this check
+		// never established.
+		const forwarded = numeric > 0 && numeric !== 407 && ![502, 503, 504].includes(numeric);
+		if (forwarded) return row("ok", `${shown} forwarded a request (HTTP ${code})`);
+		const hint = "The proxy is reachable but did not pass the request through: check its own auth settings, or whether it allows this target.";
+		if (numeric > 0) return row("warn", `${shown} answered HTTP ${code} for the probe — the request was not forwarded`, hint);
+		return row("fail", `${shown} did not forward (HTTP ${code || "000"})`, hint);
 	}
 
 	const probe = await tcpProbe(bareHost(hostname), port);

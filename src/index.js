@@ -86,8 +86,12 @@ export default function checkupExtension(pi) {
 			// The label has to follow the fact, not the intent: when every repair
 			// failed there was no second run, and calling the pre-repair verdict
 			// "re-checked" is the same contradiction the CLI avoids.
+			// `changed`, not `ok`: a repair that found nothing to do still reports
+			// success, and re-checking plus asking for a reload for a file nobody
+			// wrote is the same "did something" claim in a different place.
+			const wrote = applied.some((a) => a.changed);
 			let rechecked = false;
-			if (applied.some((a) => a.ok)) {
+			if (wrote) {
 				const after = await runChecks(buildContext({ pi, cwd: ctx.cwd }));
 				verdict = renderVerdict(after);
 				rechecked = true;

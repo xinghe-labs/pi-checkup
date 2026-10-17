@@ -20,9 +20,15 @@ export const group = "Packages";
  */
 function describeSpec(spec) {
 	if (spec === null) return "null";
+	if (spec === undefined) return "undefined";
 	if (Array.isArray(spec)) return "an array";
 	const kind = typeof spec;
-	if (kind !== "object") return `${kind} ${JSON.stringify(spec)}`.slice(0, 40);
+	if (kind === "function" || kind === "symbol" || kind === "bigint") return `a ${kind}`;
+	// A string here is not a source (sourceOf would have returned it), so it is a
+	// value someone pasted into the wrong field: its length is enough to find it
+	// and prints none of it.
+	if (kind === "string") return `a ${spec.length}-character string`;
+	if (kind !== "object") return `${kind} ${String(spec)}`.slice(0, 40);
 	const keys = Object.keys(spec);
 	return keys.length ? `an object with keys ${keys.slice(0, 4).join(", ")}` : "an empty object";
 }
@@ -216,8 +222,11 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 	} else if (manifestRead) {
 		results.push(row("manifests", "manifests", "ok", `${manifestRead} readable`));
 	} else {
-		// Nothing was opened, so there is nothing to be green about.
-		results.push(row("manifests", "manifests", "skip", "nothing to inspect"));
+		// Nothing was opened, so there is nothing to be green about. An unreadable
+		// manifest is not "nothing to inspect" — the row above says one existed.
+		results.push(
+			row("manifests", "manifests", "skip", unreadableManifest.length ? "no manifest could be read" : "nothing to inspect"),
+		);
 	}
 
 	// --- entry files -------------------------------------------------------

@@ -161,7 +161,7 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					detail: duplicateTools.map(([name, owners]) => `${name} claimed by ${owners.join(" + ")}`).join("; "),
 					hint: "Rename one of them, or disable the package you do not need.",
 				}
-			: !tools.length
+			: !comparable(tools)
 			? {
 					group,
 					id: "tool-collisions",
@@ -191,7 +191,7 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					detail: duplicateCommands.map(([name, owners]) => `/${name} claimed by ${owners.join(" + ")}`).join("; "),
 					hint: "Only one handler will run. Rename or remove one of the packages.",
 				}
-			: !commands.length
+			: !comparable(commands)
 			? {
 					group,
 					id: "command-collisions",
@@ -254,6 +254,15 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 	);
 
 	return results;
+}
+
+/**
+ * Is there anything to compare? A registry whose entries carry no `name` cannot
+ * collide, and `findDuplicates` drops those, so counting the array instead would
+ * print "none" over zero compared objects.
+ */
+function comparable(items) {
+	return items.some((item) => item?.name);
 }
 
 function findDuplicates(items) {

@@ -59,7 +59,7 @@ Exit codes: `0` nothing failed, `1` at least one check failed, `2` bad usage or 
 | `PI_CODING_AGENT_DIR` | Check a different Pi install than `~/.pi/agent`. The CLI needs no session, so this is how you check a container, a second profile, or a Pi that will not boot at all |
 | `PI_CHECKUP_IGNORE` | Suppress rows you have decided to live with — see below |
 | `PI_CHECKUP_PROBE_URL` | Test real proxy *forwarding* with `curl`, instead of only proving the port is open. Only meaningful when a proxy variable below is set — without one there is nothing to forward through |
-| `https_proxy`, `HTTPS_PROXY`, `http_proxy`, `HTTP_PROXY`, `all_proxy`, `ALL_PROXY` | The first one set is used by the provider probe (through `curl`, because Node's `fetch` ignores these) and reported redacted under Runtime. `NO_PROXY` is not consulted: the probe describes what Pi would do, and Pi ignores it too |
+| `https_proxy`, `HTTPS_PROXY`, `http_proxy`, `HTTP_PROXY`, `all_proxy`, `ALL_PROXY` | The first one set is used by the provider probe (through `curl`, because Node's `fetch` ignores these) and reported redacted under Runtime. The probe runs with `--noproxy ''`, so a `NO_PROXY` entry cannot route it around the proxy it is meant to test — and Pi's own `fetch` ignores `NO_PROXY` too |
 
 ```text
 $ npx pi-checkup
@@ -89,7 +89,7 @@ Config
 Runtime
   ✓ node               v22.23.3
   ✓ pi launcher        /root/.pi/agent/bin/pi
-  ✓ disk               6% used, 950.8 GB free
+  ✓ disk               6% used, 950.7 GB free
   ✓ proxy              http://127.0.0.1:10808 accepting connections
 
 19 checks: 15 ok, 1 warning, 0 failed, 3 skipped
@@ -97,6 +97,8 @@ Run `npx pi-checkup --verbose` to show what to do about each finding.
 
 ! 1 warning  ·  run /checkup inside Pi for registry checks
 ```
+
+Both captures below and above come from a real machine; free space, Node versions and which packages are installed are properties of that machine, not of the tool.
 
 ## Real output
 
@@ -136,7 +138,7 @@ Config
 Runtime
   ✓ node               v22.23.3
   ✓ pi launcher        /root/.pi/agent/bin/pi
-  ✓ disk               6% used, 950.8 GB free
+  ✓ disk               6% used, 950.7 GB free
   ✓ proxy              http://127.0.0.1:10808 accepting connections
 
 24 checks: 21 ok, 1 warning, 0 failed, 2 skipped
@@ -161,7 +163,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Unverifiable sources | `git:` and `https:` packages, which Pi resolves internally and no static check can follow |
 | | Malformed entries | A `packages` entry that is not a source string — `null`, a number, an object without `source` |
 | | Unreadable directories | A package directory that exists but cannot be listed, which is a permission problem rather than a missing install |
-| | Manifest shape | A `pi.extensions` entry that is not a string, so the entry files for that package could not be checked |
+| | Manifest shape | A `pi.extensions` entry that is not a string. The string entries are still checked; only the malformed ones are left out |
 | **Binaries** | Bin directory | Whether `.bin` could be listed at all — a missing `.bin` is a `skip` that still names the commands it should have held, an unreadable one is a warning |
 | | Dangling links | A symlink whose target is gone — a blocked `postinstall`, or an optional native dependency skipped for this platform. Only links are counted, so a Windows `.bin` of plain shim files reports `skip` instead of a green tick over nothing |
 | | Unreadable links | A link that exists but cannot be followed (permissions, a loop) — reported, not called broken |
@@ -170,7 +172,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Shadowed names | A package's command name resolves to an unrelated program earlier on `PATH` |
 | | Unreachable bins | A package ships a CLI you cannot invoke by name |
 | **Network** | Endpoint reachability | Probes `<baseUrl>/models` for every provider. `401`/`403` counts as alive — this never validates your key and never spends tokens |
-| | Cleartext auth | A provider on `http://` with a credential configured — an `apiKey`, a password embedded in the `baseUrl`, or a query string, which cannot be inspected for secrets. The probe is sent without any of them, and the config is reported instead |
+| | Cleartext auth | A provider on `http://` to another machine with a credential configured — an `apiKey`, a password embedded in the `baseUrl`, or a query string, which cannot be inspected for secrets. The `apiKey` and `baseUrl` credentials are withheld from the probe; a query string is never sent, so that endpoint is reported unprobed. Loopback hosts are exempt |
 | | Malformed baseUrl | A `baseUrl` that is not a URL (including the `localhost:11434/v1` paste with no scheme) or is not a string at all |
 | | DNS | Provider hosts that do not resolve, or resolve only to loopback |
 | **Config** | Invalid JSON | With a backup on disk, `/checkup fix` can restore it |
@@ -188,7 +190,7 @@ Only reversible repairs are automated, and inside a session it normally offers o
 1. **Restore a config file** that is no longer valid JSON, from its newest sibling backup. The broken copy is kept.
 
 2. **Collapse duplicate `packages` entries** in `settings.json`. Only byte-identical repeats are dropped: `"npm:a"` next to `{"source": "npm:a", "enabled": false}` carries different intent and is left alone.
-3. **Prune `packages` entries whose directory is gone** — the ones a reinstall did not bring back. Sources resolved by Pi itself (`git:`, `https:`) are never touched, and a prune that would remove *every* entry is refused: that pattern means the agent directory is wrong, not that every package vanished.
+3. **Prune `packages` entries whose directory is gone** — the ones a reinstall did not bring back. Sources resolved by Pi itself (`git:`, `https:`) are never touched, and a prune that would remove every entry it can resolve is refused: that pattern means the agent directory is wrong, not that every package vanished.
 
 Repairs 2 and 3 rewrite `settings.json`, so they need a settings file checkup actually read. Inside a session Pi hands checkup the settings from the *running process*, not the file on disk, and checkup will not rewrite a file it never read — so `/checkup fix` in-session offers repair 1, plus the other two only when Pi could not supply the settings and checkup fell back to reading the file. Stop Pi and run the CLI to be sure:
 
@@ -247,14 +249,14 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
 }
 ```
 
-The `checks` array always has one entry per row of the text report, in the same order. The excerpt above is trimmed for width; real output is printed by `JSON.stringify(payload, null, 2)`.
+The `checks` array always has one entry per row of the text report, in the same order. The excerpt above omits the other 22 entries; real output is printed by `JSON.stringify(payload, null, 2)`.
 
 Exit-worthy statuses are `fail`; `warn` means something is degraded but working. Repair metadata is stripped from the JSON payload.
 
 ## Design principles
 
 - **No traffic to anyone but your own provider.** The only outbound requests are `<baseUrl>/models` for providers already in `models.json`, plus a DNS lookup of those same hosts. The proxy check is a plain TCP connect to the proxy's own address — set `PI_CHECKUP_PROBE_URL` if you want a real end-to-end forwarding test.
-- **No secrets printed, no keys validated.** A provider probe sends whatever auth header your config already defines and ignores the response body. A key on a plain-`http://` endpoint that is not on your own machine is never sent, and neither is a query string there — `?key=…` gateways are a real shape, and a query cannot be inspected for secrets. A proxy URL is reduced to scheme, host and port — or `(configured)` when it carries credentials — and a `git:` source carrying a token is scrubbed the same way: corporate proxies and private repos both keep credentials in the URL, and both are the kind of string that ends up in a CI log. A `baseUrl` with credentials in it is moved into a header before the probe, so no error message can quote it back; over plain `http://` to another machine it is dropped instead, and the row says so.
+- **No secrets printed, no keys validated.** A provider probe sends the `apiKey` — or the `baseUrl` credentials, moved into an `Authorization` header — that your config defines, and ignores the response body. Custom `headers` are not replayed. A key on a plain-`http://` endpoint that is not on your own machine is never sent, and neither is a query string there — `?key=…` gateways are a real shape, and a query cannot be inspected for secrets. A proxy URL is reduced to scheme, host and port, and a value that is nothing but a credential prints `(configured)`; a `git:` source carrying a token is scrubbed the same way: corporate proxies and private repos both keep credentials in the URL, and both are the kind of string that ends up in a CI log. A `baseUrl` with credentials in it is moved into a header before the probe, so no error message can quote it back; over plain `http://` to another machine it is dropped instead, and the row says so.
 - **Non-blocking.** Every check runs concurrently, and every outbound call has its own timeout — 6s for a curl probe, 8s for a fetch probe, 4s for DNS, 3s for a TCP connect — under a 30s per-module backstop. A hung endpoint costs one timeout, or two when a configured proxy fails and the direct path is tried as well, and never the whole command.
 - **A crashing check is a finding, not a crash.** If a check module throws, the report says which one, marks it failed, and still shows everything else.
 - **A check with nothing to inspect says so.** `skip` means nothing was inspected — an absent optional config file, an empty `.bin`, a provider list with no host to resolve, or a row you suppressed with `PI_CHECKUP_IGNORE` (whose detail says what it replaced). Zero packages present reports `skip`, never a green tick over nothing, and the verdict counts them: `✓ 3 ok, 2 skipped` rather than a bare "all clear".
