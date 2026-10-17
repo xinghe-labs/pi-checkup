@@ -53,15 +53,18 @@ Registry
   · live registry    no Pi session — registry checks need a running process
 Packages
   ✓ package dirs     13 present
+  ✓ manifests        13 readable
+  ✓ entry files      12 manifest(s) resolve
 ...
-19 checks: 16 ok, 2 warnings, 0 failed, 1 skipped
+19 checks: 17 ok, 1 warning, 0 failed, 1 skipped
+Run `pi-checkup --verbose` to show what to do about each finding.
 
-! 2 warnings  ·  run /checkup inside Pi for registry checks
+! 1 warning  ·  run /checkup inside Pi for registry checks
 ```
 
 ## Real output
 
-This is an actual run on a working install — 21 of 23 checks pass, and both warnings are real problems that `pi list` showed nothing about:
+This is an actual run on a working install — 22 of 23 checks pass, and the one warning is a real problem that `pi list` showed nothing about:
 
 ```text
 Registry
@@ -72,12 +75,11 @@ Registry
   ✓ silent packages  none
 Packages
   ✓ package dirs     13 present
-  ✓ manifests        all readable
-  ✓ entry files      all present
+  ✓ manifests        13 readable
+  ✓ entry files      12 manifest(s) resolve
 Binaries
   ✓ dangling links   19 entries all resolve
-  ! shadowed names   playwright-cli resolves to /mnt/d/npm/npm-global/playwright-cli; sg resolves to /usr/bin/sg
-      Running the bare name in a shell starts a different program. Call the package binary by full path, or reorder PATH.
+  ✓ shadowed names   none
   ! unreachable bins 6 package command(s) not on PATH: pi-lens, pi-lens-analyze, pi-lens-mcp, pi-mcp-adapter, pi-subagents, pi-web-access-mcp
       Extensions that call these by full path still work; you and the agent cannot invoke them by name.
 Network
@@ -87,16 +89,16 @@ Config
   ✓ settings.json    valid JSON
   ✓ models.json      valid JSON
   ✓ project settings none
-  ✓ backups          present for every config file
+  ✓ backups          2 file(s) backed up
   ✓ duplicate packages none
   ✓ env references   all set
 Runtime
   ✓ node             v22.23.3
-  ✓ pi launcher      ~/.pi/agent/bin/pi
+  ✓ pi launcher      /root/.pi/agent/bin/pi
   ✓ disk             6% used, 951.1 GB free
-  ✓ proxy            http://127.0.0.1:10808 reachable (HTTP 401)
+  ✓ proxy            127.0.0.1:10808 accepting connections
 
-23 checks: 21 ok, 2 warnings, 0 failed
+23 checks: 22 ok, 1 warning, 0 failed
 Run `/checkup verbose` to show what to do about each finding.
 ```
 
@@ -114,20 +116,25 @@ Run `/checkup verbose` to show what to do about each finding.
 | | Shadowed names | A package's command name resolves to an unrelated program earlier on `PATH` |
 | | Unreachable bins | A package ships a CLI you cannot invoke by name |
 | **Network** | Endpoint reachability | Probes `<baseUrl>/models` for every provider. `401`/`403` counts as alive — this never validates your key and never spends tokens |
+| | Cleartext auth | A provider on `http://` with a key configured. The probe is sent without the key and the config is reported instead |
 | | DNS | Provider hosts that do not resolve, or resolve only to loopback |
 | **Config** | Invalid JSON | With a backup on disk, `/checkup fix` can restore it |
 | | Duplicate package entries | The package loads twice and the second registration can shadow the first |
-| | Unset env references | `$NAME` / `${NAME}` in settings with nothing in the environment |
+| | Unset env references | `$NAME` / `${NAME}` in the `models.json` fields Pi actually interpolates (`apiKey`, header values) with nothing in the environment |
+| | Backups | Whether a broken config could be recovered at all |
 | **Runtime** | Node version, launcher, disk, proxy | The host conditions Pi itself needs |
 
 ## `/checkup fix`
 
-Only two repairs are automated, both reversible:
+Only reversible repairs are automated:
 
 1. **Restore a config file** that is no longer valid JSON, from its newest sibling backup. The broken copy is kept.
 2. **Collapse duplicate `packages` entries** in `settings.json`.
+3. **Prune `packages` entries whose directory is gone** — the ones a reinstall did not bring back. Sources resolved by Pi itself (`git:`, `https:`) are never touched.
 
 Every write is preceded by a timestamped backup, and the command asks for confirmation before touching anything. Anything that would delete a package, disable an extension, or edit your shell environment is reported with a suggestion and left alone — a diagnostic tool should not be able to break your setup in the process of describing it.
+
+Nothing is repaired unless a check found something wrong, so a healthy install writes nothing at all.
 
 ## JSON output
 
@@ -135,27 +142,29 @@ Every write is preceded by a timestamped backup, and the command asks for confir
 
 ```json
 {
-  "summary": { "total": 24, "ok": 22, "warn": 2, "fail": 0, "skip": 0 },
+  "summary": { "total": 23, "ok": 21, "warn": 2, "fail": 0, "skip": 0 },
   "checks": [
     {
       "group": "Binaries",
-      "id": "shadowed",
-      "title": "shadowed names",
+      "id": "unreachable",
+      "title": "unreachable bins",
       "status": "warn",
-      "detail": "sg resolves to /usr/bin/sg"
+      "detail": "2 package command(s) not on PATH: pi-lens, pi-subagents",
+      "hint": "Extensions that call these by full path still work; you and the agent cannot invoke them by name."
     }
   ]
 }
 ```
 
-Exit-worthy statuses are `fail`; `warn` means something is degraded but working.
+Exit-worthy statuses are `fail`; `warn` means something is degraded but working. Repair metadata is stripped from the JSON payload.
 
 ## Design principles
 
-- **No network egress beyond your own provider endpoints.** The only outbound requests are `<baseUrl>/models` for providers already in `models.json`, plus a DNS lookup of those same hosts.
-- **No secrets printed, no keys validated.** A provider probe sends whatever auth header your config already defines and ignores the response body.
+- **No traffic to anyone but your own provider.** The only outbound requests are `<baseUrl>/models` for providers already in `models.json`, plus a DNS lookup of those same hosts. The proxy check is a plain TCP connect to the proxy's own address — set `PI_CHECKUP_PROBE_URL` if you want a real end-to-end forwarding test.
+- **No secrets printed, no keys validated.** A provider probe sends whatever auth header your config already defines and ignores the response body. A key on a plain-`http://` endpoint is never sent.
 - **Non-blocking.** Every check runs concurrently with a hard timeout. A hung endpoint costs 8 seconds, not the whole command.
-- **A crashing check is a finding, not a crash.** If a check module throws, the report says which one and still shows everything else.
+- **A crashing check is a finding, not a crash.** If a check module throws, the report says which one, marks it failed, and still shows everything else.
+- **A check with nothing to inspect says so.** Zero packages present reports `skip`, never a green tick over nothing.
 - **Cross-platform.** Node built-ins only. `which`/`where`, `curl` vs `NUL`, and path separators are handled; checks that cannot run are marked skipped rather than failed.
 - **Zero dependencies.** Nothing to audit, nothing to break on a Pi upgrade.
 
@@ -167,13 +176,13 @@ Being explicit about what this cannot see:
 - **`git:` and URL package sources are not inspected.** Pi resolves them internally; static probing cannot follow them, so they are reported as `unverifiable` rather than guessed at.
 - **The registry section needs a running session.** Tools and commands are read from the live process; the CLI reports that section as skipped rather than guessing from disk.
 - **Tool collisions are reported, not resolved.** Pi's registry keeps the last registration; checkup tells you it happened.
-- **The proxy probe needs `curl`.** Without it the check reports skipped instead of failing.
+- **The proxy check proves the port is open, not that forwarding works.** A TCP connect tells you the process is running; it says nothing about whether it can reach a given target. Set `PI_CHECKUP_PROBE_URL` for the full test, which uses `curl`.
 - **Static checks describe the current session.** Install a package and the registry section is stale until `/reload`.
 
 ## Development
 
 ```bash
-git clone https://github.com/CHANGE_ME/pi-checkup
+git clone https://github.com/xinghe-labs/pi-checkup
 cd pi-checkup
 node --test          # unit tests, no Pi session needed
 ```
@@ -205,7 +214,9 @@ src/
     runtime.js       node, launcher, disk, proxy
 ```
 
-Adding a check: export `group` and `run(ctx)`, return an array of `{ group, id, title, status, detail, hint? }`, and register the module in `src/index.js`.
+Adding a check: export `group` and `run(ctx)`, return an array of `{ group, id, title, status, detail, hint? }`, and add the module to the `CHECKS` array in `src/checks/index.js`.
+
+`ctx` carries everything a check may read — `agentDir`, `settingsFile`, `modelsFile`, `settings`, `settingsSource`, `hasRuntime`, `offline` — so no check reads a path on its own. Tests point `agentDir` at a temp directory; see `test/checks.test.js`.
 
 ## License
 

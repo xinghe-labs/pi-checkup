@@ -6,7 +6,7 @@
 // change, and neither one deletes a package or disables an extension.
 import fs from "node:fs";
 import path from "node:path";
-import { newestBackup, readJson } from "./util.js";
+import { newestBackup, readJson, resolvePackageDir } from "./util.js";
 
 function sourceOf(spec) {
 	return typeof spec === "string" ? spec : spec?.source;
@@ -66,10 +66,53 @@ export function applyDedupePackages(target) {
 	};
 }
 
+/** Drop settings entries whose package directory is not on disk. */
+export function applyPruneMissingPackages(target) {
+	const settings = readJson(target);
+	if (!settings.ok) return { ok: false, message: `${path.basename(target)} is not valid JSON` };
+	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to prune" };
+
+	// settings.json lives directly in the agent directory, which is the root
+	// resolvePackageDir() resolves npm: specs against.
+	const root = path.dirname(target);
+	const kept = [];
+	const removed = [];
+	for (const spec of settings.data.packages) {
+		const source = sourceOf(spec);
+		const dir = resolvePackageDir(source, root);
+		// Keep anything that cannot be resolved statically: git:/https: sources are
+		// legitimate and dropping them would uninstall a working package.
+		if (!dir) {
+			kept.push(spec);
+			continue;
+		}
+		let present = false;
+		try {
+			present = fs.statSync(dir).isDirectory();
+		} catch {
+			present = false;
+		}
+		if (present) kept.push(spec);
+		else removed.push(String(source));
+	}
+
+	if (!removed.length) return { ok: true, message: "nothing to prune" };
+
+	const backup = `${target}.checkup-bak-${stamp()}`;
+	fs.copyFileSync(target, backup);
+	settings.data.packages = kept;
+	fs.writeFileSync(target, `${JSON.stringify(settings.data, null, 2)}\n`);
+	return {
+		ok: true,
+		message: `removed ${removed.length} entr${removed.length === 1 ? "y" : "ies"} with no directory on disk (${removed.slice(0, 3).join(", ")}${removed.length > 3 ? ", ..." : ""}); backup: ${path.basename(backup)}`,
+	};
+}
+
 /** Named repairs, keyed by the `fix` field a check emits. */
 const REPAIRS = {
 	"restore-config": applyRestoreConfig,
 	"dedupe-packages": applyDedupePackages,
+	"prune-missing-packages": applyPruneMissingPackages,
 };
 
 export const REPAIR_NAMES = Object.keys(REPAIRS);

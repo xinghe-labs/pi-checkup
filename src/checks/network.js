@@ -4,13 +4,17 @@
 // /models, and a 401/403 still proves the host answered. No vendor SDK, no
 // API key validation (this package never spends your tokens).
 import path from "node:path";
-import { agentDir, readJson, resolveHost, timedFetch } from "../util.js";
+import { readJson, resolveHost, timedFetch } from "../util.js";
 
 export const group = "Network";
 
-export async function run({ offline = false } = {}) {
+/** Hosts where an unencrypted request stays on the machine. */
+function isLoopback(host) {
+	return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
+
+export async function run({ offline = false, agentDir: root, modelsFile }) {
 	const results = [];
-	const modelsFile = path.join(agentDir(), "models.json");
 	const models = readJson(modelsFile);
 	if (!models.ok) {
 		return [
@@ -31,7 +35,7 @@ export async function run({ offline = false } = {}) {
 		return [
 			{
 				group,
-				id: "offline",
+				id: "providers",
 				title: "providers",
 				status: "skip",
 				detail: `offline mode — ${entries.length} configured endpoint(s) not probed`,
@@ -42,6 +46,8 @@ export async function run({ offline = false } = {}) {
 
 	const hosts = new Map();
 	const probes = [];
+	// Providers whose key would cross the network unencrypted.
+	const cleartext = [];
 	for (const [name, provider] of entries) {
 		const baseUrl = provider.baseUrl ?? provider.base_url;
 		if (!baseUrl || typeof baseUrl !== "string") continue;
@@ -55,7 +61,16 @@ export async function run({ offline = false } = {}) {
 		hosts.set(url.hostname, name);
 		const headers = {};
 		const key = provider.apiKey ?? provider.api_key;
-		if (typeof key === "string" && key) headers.Authorization = `Bearer ${key}`;
+		if (typeof key === "string" && key) {
+			if (url.protocol === "http:" && !isLoopback(url.hostname)) {
+				// Testing reachability is not worth putting a live credential on the
+				// wire in the clear, so the probe goes out unauthenticated and the
+				// config gets reported instead.
+				cleartext.push(name);
+			} else {
+				headers.Authorization = `Bearer ${key}`;
+			}
+		}
 		probes.push(
 			timedFetch(url.toString(), { headers }).then((res) => {
 				// 401/403 means the endpoint is up and merely disagrees about auth,
@@ -98,12 +113,26 @@ export async function run({ offline = false } = {}) {
 		});
 	}
 
+	// --- cleartext credentials ----------------------------------------------
+	// Reported separately from reachability: the endpoint may answer perfectly
+	// and the key may still be readable by anything on the path.
+	if (cleartext.length) {
+		results.push({
+			group,
+			id: "cleartext",
+			title: "cleartext auth",
+			status: "warn",
+			detail: `${cleartext.join(", ")} use http:// with an apiKey configured`,
+			hint: "Switch the baseUrl to https://, or use a host on localhost. The reachability probe above was sent without the key.",
+		});
+	}
+
 	// --- DNS ---------------------------------------------------------------
 	// A host that resolves to loopback while the baseUrl is remote, or does not
 	// resolve at all, explains a whole class of "it worked yesterday" failures.
 	const dnsChecks = await Promise.all(
 		[...hosts].map(async ([host, provider]) => {
-			if (host === "localhost" || /^127\./.test(host) || /^::1$/.test(host)) return null;
+			if (isLoopback(host)) return null;
 			const res = await resolveHost(host);
 			if (!res.ok) return { host, provider, status: "fail", detail: `${host} does not resolve (${res.error})` };
 			const loopback = res.addresses.every((a) => a === "::1" || a.startsWith("127."));

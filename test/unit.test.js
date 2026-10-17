@@ -1,5 +1,5 @@
-// Unit tests for the parts that can be tested without a running Pi session.
-// The check modules themselves are exercised by the smoke test in pi-smoke.md.
+// Unit tests for the pure helpers and the renderer. The check modules have their
+// own file: test/checks.test.js.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";

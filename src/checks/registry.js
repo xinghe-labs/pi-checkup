@@ -16,7 +16,7 @@ function call(fn, fallback) {
 	}
 }
 
-export async function run({ pi, hasRuntime, settings }) {
+export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 	const results = [];
 
 	// Without a running session there is no registry to audit. Say so once rather
@@ -102,9 +102,19 @@ export async function run({ pi, hasRuntime, settings }) {
 	// --- silent failures ---------------------------------------------------
 	// A package that declares extensions but registered nothing is the most
 	// common failure mode that produces no error message anywhere.
-	const registered = new Set([...toolsByOwner.keys(), ...commandsByOwner.keys()]);
-	const declared = declaredPackages(settings);
-	const silent = declared.filter((name) => !registered.has(name));
+	//
+	// Compared by resolved file path rather than by name: a local package is
+	// declared as `./local-ext` in settings but attributed as `local:local-ext`
+	// by ownerOf(), and an npm package can register from a nested directory. Path
+	// containment is the only comparison that holds for every source kind.
+	const loadedPaths = [...tools, ...commands]
+		.map((item) => item?.sourceInfo?.path)
+		.filter((p) => typeof p === "string" && !p.startsWith("builtin:"))
+		.map(normalizePath);
+
+	const silent = declaredPackages(settings, root)
+		.filter((pkg) => !loadedPaths.some((loaded) => loaded === pkg.dir || loaded.startsWith(`${pkg.dir}/`)))
+		.map((pkg) => pkg.label);
 	results.push(
 		silent.length
 			? {
@@ -133,17 +143,28 @@ function findDuplicates(items) {
 	return [...byName].filter(([, owners]) => owners.size > 1).map(([name, owners]) => [name, [...owners]]);
 }
 
-/** Packages from settings whose manifests actually declare an extension entry. */
-function declaredPackages(settings) {
+/** Absolute, forward-slashed form of a path, for prefix comparisons. */
+function normalizePath(p) {
+	return path.resolve(p).replace(/\\/g, "/");
+}
+
+/**
+ * Packages from settings whose manifests declare an extension entry.
+ * Returns the resolved directory, because the declared source string and the
+ * path Pi reports in sourceInfo are not in the same namespace.
+ */
+function declaredPackages(settings, root) {
 	const out = [];
 	for (const spec of settings?.packages ?? []) {
 		const source = typeof spec === "string" ? spec : spec?.source;
 		if (typeof source !== "string") continue;
-		const dir = resolvePackageDir(source);
+		const dir = resolvePackageDir(source, root);
+		// git:/https:/bare sources are resolved by Pi itself; the Packages group
+		// already reports those as unverifiable rather than guessing here.
 		if (!dir) continue;
 		const manifest = readJson(path.join(dir, "package.json"));
 		if (!manifest.ok || !manifest.data?.pi?.extensions) continue;
-		out.push(source.startsWith("npm:") ? source.slice(4) : source);
+		out.push({ label: source.replace(/^npm:/, ""), dir: normalizePath(dir) });
 	}
 	return out;
 }

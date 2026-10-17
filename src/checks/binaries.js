@@ -7,15 +7,15 @@
 //      PATH, so the name resolves to something else entirely.
 import path from "node:path";
 import fs from "node:fs";
-import { agentDir, exists, readJson, resolvePackageDir, whichAll, isWindows } from "../util.js";
+import { exists, readJson, resolvePackageDir, whichAll, isWindows } from "../util.js";
 
 export const group = "Binaries";
 
 /** bin names that installed packages declare in their own manifests. */
-function declaredBins(settings) {
+function declaredBins(settings, root) {
 	const names = new Set();
 	for (const spec of settings?.packages ?? []) {
-		const dir = resolvePackageDir(spec);
+		const dir = resolvePackageDir(spec, root);
 		if (!dir) continue;
 		const manifest = readJson(path.join(dir, "package.json"));
 		if (!manifest.ok) continue;
@@ -31,8 +31,8 @@ function declaredBins(settings) {
 	return names;
 }
 
-export async function run({ settings }) {
-	const binDir = path.join(agentDir(), "npm", "node_modules", ".bin");
+export async function run({ settings, agentDir: root }) {
+	const binDir = path.join(root, "npm", "node_modules", ".bin");
 	if (!exists(binDir)) {
 		return [
 			{
@@ -93,17 +93,19 @@ export async function run({ settings }) {
 	];
 
 	// --- shadowing and reachability ----------------------------------------
-	const ownBins = declaredBins(settings);
+	const ownBins = declaredBins(settings, root);
 	const shadowed = [];
 	const unreachable = [];
 	const norm = (p) => (isWindows ? normalizeWin(p) : p);
 
 	for (const entry of entries) {
+		// Both findings below are about commands a Pi package advertises. A
+		// transitive dev dependency that happens to be shadowed is not the user's
+		// problem and reporting it made a healthy install look broken forever.
+		if (!ownBins.has(entry)) continue;
 		const hits = await whichAll(entry);
 		if (!hits.length) {
-			// Transitive dev tooling is normally not on PATH and that is fine.
-			// Only report bins a Pi package actually advertises.
-			if (ownBins.has(entry)) unreachable.push(entry);
+			unreachable.push(entry);
 			continue;
 		}
 		if (norm(hits[0]) !== norm(path.join(binDir, entry))) shadowed.push({ name: entry, actual: hits[0] });

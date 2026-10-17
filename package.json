@@ -4,7 +4,7 @@
   "description": "Health checks for your Pi setup: tool/command conflicts, broken packages, shadowed binaries, dead endpoints.",
   "type": "module",
   "license": "MIT",
-  "author": "",
+  "author": "xinghe-labs",
   "engines": {
     "node": ">=20"
   },
@@ -39,10 +39,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/CHANGE_ME/pi-checkup.git"
+    "url": "git+https://github.com/xinghe-labs/pi-checkup.git"
   },
   "bugs": {
-    "url": "https://github.com/CHANGE_ME/pi-checkup/issues"
+    "url": "https://github.com/xinghe-labs/pi-checkup/issues"
   },
-  "homepage": "https://github.com/CHANGE_ME/pi-checkup#readme"
+  "homepage": "https://github.com/xinghe-labs/pi-checkup#readme"
 }

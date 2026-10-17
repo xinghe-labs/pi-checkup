@@ -7,13 +7,12 @@
 // never committed.
 import path from "node:path";
 import fs from "node:fs";
-import { agentDir, globExists, readJson, resolvePackageDir } from "../util.js";
+import { globExists, readJson, resolvePackageDir } from "../util.js";
 
 export const group = "Packages";
 
-export async function run({ settings, cwd }) {
+export async function run({ settings, agentDir: root, settingsFile }) {
 	const results = [];
-	const root = agentDir();
 
 	const specs = settings?.packages ?? [];
 
@@ -33,7 +32,11 @@ export async function run({ settings, cwd }) {
 	const brokenManifest = [];
 	const missingEntry = [];
 	const unverifiable = [];
-	let inspected = 0;
+	// Counted separately so a check that had nothing to look at reports skipped
+	// instead of printing a green tick over zero inspected packages.
+	let present = 0;
+	let manifestRead = 0;
+	let entryChecked = 0;
 
 	for (const spec of specs) {
 		const source = typeof spec === "string" ? spec : spec?.source;
@@ -42,7 +45,6 @@ export async function run({ settings, cwd }) {
 			unverifiable.push(String(source));
 			continue;
 		}
-		inspected++;
 		let stat;
 		try {
 			stat = fs.statSync(dir);
@@ -54,68 +56,84 @@ export async function run({ settings, cwd }) {
 			missingDir.push(String(source));
 			continue;
 		}
+		present++;
 		const manifest = readJson(path.join(dir, "package.json"));
 		if (!manifest.ok) {
 			brokenManifest.push(String(source));
 			continue;
 		}
+		manifestRead++;
 		const declared = manifest.data?.pi?.extensions;
 		if (!declared) continue; // convention-directory package, nothing to verify
+		entryChecked++;
 		const list = Array.isArray(declared) ? declared : [declared];
 		const missing = list.filter((entry) => !globExists(dir, entry));
 		if (missing.length) missingEntry.push(`${source} -> ${missing.join(", ")}`);
 	}
 
 	const preview = (list, n) => list.slice(0, n).join(", ") + (list.length > n ? ", ..." : "");
+	/** One finding row, so the checks below stay flat and readable. */
+	const row = (id, title, status, detail, extra = {}) => ({ group, id, title, status, detail, ...extra });
 
-	results.push(
-		missingDir.length
-			? {
-					group,
-					id: "dirs",
-					title: "package dirs",
-					status: "fail",
-					detail: `${missingDir.length} missing from node_modules: ${preview(missingDir, 3)}`,
-					hint: "Run `pi install` again for the listed packages, or remove them from settings.json.",
-					fix: "dedupe-packages",
-				}
-			: { group, id: "dirs", title: "package dirs", status: "ok", detail: `${inspected} present` },
-	);
-
-	results.push(
-		brokenManifest.length
-			? {
-					group,
-					id: "manifests",
-					title: "manifests",
-					status: "fail",
-					detail: `${brokenManifest.length} unreadable package.json: ${brokenManifest.slice(0, 3).join(", ")}`,
-					hint: "Reinstall the affected packages.",
-				}
-			: { group, id: "manifests", title: "manifests", status: "ok", detail: "all readable" },
-	);
-
-	if (missingEntry.length) {
-		results.push({
-			group,
-			id: "entries",
-			title: "entry files",
-			status: "fail",
-			detail: `${missingEntry.length} manifest(s) point at files that do not exist: ${missingEntry.slice(0, 2).join("; ")}`,
-			hint: "The package is installed but cannot load. Reinstall it, or check whether it needs a build step.",
-		});
+	// --- package directories -----------------------------------------------
+	if (missingDir.length) {
+		results.push(
+			row("dirs", "package dirs", "fail", `${missingDir.length} missing from node_modules: ${preview(missingDir, 3)}`, {
+				hint: "Run `pi install` again for the listed packages, or remove them from settings.json.",
+				// Dropping the entry is the only repair a static checker can offer;
+				// reinstalling needs the package manager and the network.
+				fix: settingsFile ? "prune-missing-packages" : undefined,
+				fixTarget: settingsFile || undefined,
+			}),
+		);
 	} else {
-		results.push({ group, id: "entries", title: "entry files", status: "ok", detail: "all present" });
+		results.push(row("dirs", "package dirs", "ok", `${present} present`));
+	}
+
+	// --- manifests ---------------------------------------------------------
+	if (brokenManifest.length) {
+		results.push(
+			row(
+				"manifests",
+				"manifests",
+				"fail",
+				`${brokenManifest.length} unreadable package.json: ${brokenManifest.slice(0, 3).join(", ")}`,
+				{ hint: "Reinstall the affected packages." },
+			),
+		);
+	} else if (manifestRead) {
+		results.push(row("manifests", "manifests", "ok", `${manifestRead} readable`));
+	} else {
+		// Nothing was opened, so there is nothing to be green about.
+		results.push(row("manifests", "manifests", "skip", "nothing to inspect"));
+	}
+
+	// --- entry files -------------------------------------------------------
+	if (missingEntry.length) {
+		results.push(
+			row(
+				"entries",
+				"entry files",
+				"fail",
+				`${missingEntry.length} manifest(s) point at files that do not exist: ${missingEntry.slice(0, 2).join("; ")}`,
+				{ hint: "The package is installed but cannot load. Reinstall it, or check whether it needs a build step." },
+			),
+		);
+	} else if (entryChecked) {
+		results.push(row("entries", "entry files", "ok", `${entryChecked} manifest(s) resolve`));
+	} else {
+		results.push(row("entries", "entry files", "skip", "no package declares an entry file"));
 	}
 
 	if (unverifiable.length) {
-		results.push({
-			group,
-			id: "unverifiable",
-			title: "unverifiable",
-			status: "skip",
-			detail: `${unverifiable.length} source(s) resolved by Pi itself, not inspectable statically: ${unverifiable.slice(0, 3).join(", ")}`,
-		});
+		results.push(
+			row(
+				"unverifiable",
+				"unverifiable",
+				"skip",
+				`${unverifiable.length} source(s) resolved by Pi itself, not inspectable statically: ${unverifiable.slice(0, 3).join(", ")}`,
+			),
+		);
 	}
 
 	return results;

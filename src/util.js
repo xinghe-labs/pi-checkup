@@ -85,6 +85,10 @@ export function backupFile(file) {
 /**
  * Newest sibling backup of a file, matching either the `.checkup-bak-*` naming
  * this package uses or the common `file.json.bak` convention other tools use.
+ *
+ * Ordered by mtime, not by name: a plain `.bak` written a minute ago is more
+ * useful to restore than a `.checkup-bak-2026-01-01` from last year, and the
+ * two naming schemes do not sort chronologically against each other.
  */
 export function newestBackup(file) {
 	const dir = path.dirname(file);
@@ -95,11 +99,26 @@ export function newestBackup(file) {
 	} catch {
 		return null;
 	}
-	const candidates = entries
-		.filter((e) => e !== base && e.startsWith(base) && /(\.bak|\.checkup-bak)(-|$)/.test(e.slice(base.length)))
-		.map((e) => path.join(dir, e))
-		.sort();
-	return candidates.at(-1) ?? null;
+	let best = null;
+	let bestTime = Number.NEGATIVE_INFINITY;
+	for (const entry of entries) {
+		if (entry === base || !entry.startsWith(base)) continue;
+		if (!/(\.bak|\.checkup-bak)(-|$)/.test(entry.slice(base.length))) continue;
+		const full = path.join(dir, entry);
+		let mtimeMs;
+		try {
+			mtimeMs = fs.statSync(full).mtimeMs;
+		} catch {
+			continue; // dangling symlink or raced deletion
+		}
+		// A bulk copy can give several backups the same mtime; break the tie on
+		// the name so repeated runs always pick the same file.
+		if (mtimeMs > bestTime || (mtimeMs === bestTime && best !== null && full > best)) {
+			best = full;
+			bestTime = mtimeMs;
+		}
+	}
+	return best;
 }
 
 /**
