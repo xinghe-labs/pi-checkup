@@ -270,6 +270,7 @@ Being explicit about what this cannot see:
 
 - **Extension load errors are not exposed to extensions.** Pi's own `LoadExtensionsResult.errors` is not reachable from the extension API, so "which extension threw during load" is inferred statically (declared but unregistered), not read directly.
 - **`git:` and URL package sources are not inspected.** Pi resolves them internally; static probing cannot follow them, so they are reported as `unverifiable` rather than guessed at.
+- **Only the personal agent directory is audited.** A project's `.pi/settings.json` is checked for parseability, but the packages it declares are not resolved: where a project installs them is Pi's decision, and guessing the path produced "missing" claims that were not true.
 - **The registry section needs a running session.** Tools and commands are read from the live process; the CLI reports that section as skipped rather than guessing from disk.
 - **Tool collisions are reported, not resolved.** Pi's registry keeps the last registration; checkup tells you it happened.
 - **The proxy check proves the port is open, not that forwarding works.** A TCP connect tells you the process is running; it says nothing about whether it can reach a given target. Set `PI_CHECKUP_PROBE_URL` for the full test, which uses `curl`.
