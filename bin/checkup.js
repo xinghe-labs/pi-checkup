@@ -12,19 +12,9 @@ import { runChecks } from "../src/checks/index.js";
 import { buildContext } from "../src/context.js";
 import { renderReport, renderVerdict, toJson } from "../src/render.js";
 import { applyRepairs } from "../src/repair.js";
+import { packageVersion, scrubCredentials } from "../src/util.js";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-
-// A corrupt install should still produce a report, so a bad manifest degrades to
-// an unknown version instead of an unhandled SyntaxError.
-function readVersion() {
-	try {
-		return JSON.parse(fs.readFileSync(path.join(HERE, "..", "package.json"), "utf8")).version ?? "unknown";
-	} catch {
-		return "unknown";
-	}
-}
-const VERSION = readVersion();
+const VERSION = packageVersion();
 
 const HELP = `pi-checkup ${VERSION} — health checks for a Pi installation
 
@@ -117,7 +107,10 @@ async function main() {
 	const results = await runChecks(ctx);
 
 	if (opts.json) {
-		process.stdout.write(`${JSON.stringify(toJson(results), null, 2)}\n`);
+		// Stamped: a JSON report pasted into an issue has to say what produced it,
+		// and a version or a platform is the first thing anyone asks for.
+		const payload = toJson(results, { version: VERSION, node: process.versions.node, platform: process.platform });
+		process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 		return results.some((r) => r.status === "fail") ? 1 : 0;
 	}
 
@@ -170,6 +163,18 @@ async function main() {
 	return finalResults.some((r) => r.status === "fail") ? 1 : 0;
 }
 
+// `npx pi-checkup | head -3` closes stdout while the report is still being
+// written. Node surfaces that as an unhandled EPIPE rejection, so a truncated
+// pipe printed "pi-checkup crashed" with a stack for something that is not a
+// failure of the check at all. A consumer that stopped reading is a normal exit.
+process.stdout.on("error", (e) => {
+	if (e?.code === "EPIPE") process.exit(0);
+	throw e;
+});
+process.stderr.on("error", (e) => {
+	if (e?.code !== "EPIPE") throw e;
+});
+
 // `process.exit()` can truncate a pipe that has not drained, and a --json report
 // on a slow consumer is exactly the payload large enough to hit that. Setting
 // exitCode lets Node flush and exit on its own.
@@ -178,7 +183,9 @@ main().then(
 		process.exitCode = code;
 	},
 	(e) => {
-		process.stderr.write(`pi-checkup crashed: ${String(e?.stack ?? e)}\n`);
+		// Scrubbed: an uncaught error can quote the URL or the config value it
+		// choked on, and a crash report is exactly where nobody looks twice.
+		process.stderr.write(`pi-checkup crashed: ${scrubCredentials(String(e?.stack ?? e))}\n`);
 		process.exitCode = 2;
 	},
 );

@@ -11,6 +11,21 @@ const MIN_NODE_MAJOR = 20;
 export async function run({ offline = false, agentDir: root, env = process.env } = {}) {
 	const results = [];
 
+	// --- agent directory ---------------------------------------------------
+	// Without this row a container that never ran Pi reported "2 ok, 12 skipped"
+	// and a green verdict: every check had skipped, so nothing had been looked at,
+	// and the reader was told the install was fine.
+	if (root && !exists(root)) {
+		results.push({
+			group,
+			id: "agent-dir",
+			title: "agent dir",
+			status: "warn",
+			detail: `${root} does not exist — nothing about an install was inspected`,
+			hint: "Run `pi` once to create it, or set PI_CODING_AGENT_DIR to the directory your install uses.",
+		});
+	}
+
 	// --- node --------------------------------------------------------------
 	const major = Number(process.versions.node.split(".")[0]);
 	results.push(
@@ -161,7 +176,10 @@ async function checkProxy(proxy, env = process.env) {
 	if (!hostname || !port) {
 		// `proxy.corp:8080` with no scheme is a shape curl accepts and this check
 		// used to warn about — the same env value, judged two different ways.
-		const textual = /^([a-z0-9._\-[\]]+):(\d{1,5})$/i.exec(proxy.trim());
+		// Userinfo is stripped first: `user:pass@proxy.corp:8080` is a shape curl
+		// also accepts, and the credential is not part of the address.
+		const bare = proxy.trim().replace(/^[^@/]*@/, "");
+		const textual = /^([a-z0-9._\-[\]]+):(\d{1,5})$/i.exec(bare);
 		if (textual) {
 			hostname = textual[1];
 			port = Number(textual[2]);

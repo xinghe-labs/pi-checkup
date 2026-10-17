@@ -15,6 +15,7 @@ import * as config from "../src/checks/config.js";
 import * as binaries from "../src/checks/binaries.js";
 import * as registry from "../src/checks/registry.js";
 import * as network from "../src/checks/network.js";
+import * as runtime from "../src/checks/runtime.js";
 import { runChecks } from "../src/checks/index.js";
 import { buildContext } from "../src/context.js";
 
@@ -286,10 +287,13 @@ test("binaries: shadowing is only reported for commands a package advertises", a
 	const root = tmpRoot();
 	const binDir = path.join(root, "npm", "node_modules", ".bin");
 	const shadowDir = path.join(root, "shadow");
+	// whichAll appends PATHEXT on Windows, so an extension-less fixture is a file
+	// no lookup can ever find there.
+	const exe = process.platform === "win32" ? ".exe" : "";
 	for (const dir of [binDir, shadowDir]) {
 		fs.mkdirSync(dir, { recursive: true });
 		for (const name of ["checkup-owntool", "checkup-othertool"]) {
-			const file = path.join(dir, name);
+			const file = path.join(dir, name + exe);
 			fs.writeFileSync(file, "#!/bin/sh\n");
 			fs.chmodSync(file, 0o755);
 		}
@@ -343,30 +347,30 @@ test("binaries: no .bin directory is skipped rather than failed", async () => {
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("binaries: a leftover staging link from an interrupted install is not a broken command", async () => {
+test("binaries: a leftover staging link from an interrupted install is not a broken command", async (t) => {
 	const root = tmpRoot();
 	const pkg = installPkg(root, "pi-thing", { bin: { "pi-thing": "cli.js" } }, ["cli.js"]);
 	const binDir = path.join(root, "npm", "node_modules", ".bin");
 	fs.mkdirSync(binDir, { recursive: true });
-	fs.symlinkSync(path.join(pkg, "cli.js"), path.join(binDir, "pi-thing"));
+	linkOrSkip(t, path.join(pkg, "cli.js"), path.join(binDir, "pi-thing"));
 	// npm writes .<name>-<random> and renames it into place, so one of these means
 	// an install is in flight, not that the package is damaged.
-	fs.symlinkSync(path.join(pkg, "gone.js"), path.join(binDir, ".pi-thing-BxfjvsL8"));
+	linkOrSkip(t, path.join(pkg, "gone.js"), path.join(binDir, ".pi-thing-BxfjvsL8"));
 
 	const rows = byId(await binaries.run(buildContext({ agentDir: root })));
 	assert.equal(rows.dangling.status, "ok", rows.dangling.detail);
-	assert.equal(rows.dangling.detail, "1 entry all resolve");
+	assert.equal(rows.dangling.detail, "1 link all resolve");
 	assert.equal(rows.staging.status, "warn");
 	assert.match(rows.staging.detail, /leftover staging link/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("binaries: a real dangling link still fails", async () => {
+test("binaries: a real dangling link still fails", async (t) => {
 	const root = tmpRoot();
 	const pkg = installPkg(root, "pi-thing", { bin: { "pi-thing": "cli.js" } }, ["cli.js"]);
 	const binDir = path.join(root, "npm", "node_modules", ".bin");
 	fs.mkdirSync(binDir, { recursive: true });
-	fs.symlinkSync(path.join(pkg, "gone.js"), path.join(binDir, "pi-thing"));
+	linkOrSkip(t, path.join(pkg, "gone.js"), path.join(binDir, "pi-thing"));
 	const rows = byId(await binaries.run(buildContext({ agentDir: root })));
 	assert.equal(rows.dangling.status, "fail");
 	assert.match(rows.dangling.detail, /pi-thing/);
@@ -423,6 +427,15 @@ test("registry: a package owned by a nested path still counts as loaded", async 
 	const rows = byId(await registry.run(ctx));
 	assert.equal(rows.silent.status, "ok", rows.silent.detail);
 	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("runtime: a missing agent directory is a warning, not a clean sweep", async () => {
+	// Every check skips when there is no install to inspect, and a report of
+	// "2 ok, 12 skipped" with a green verdict reads as a healthy install.
+	const root = path.join(os.tmpdir(), `checkup-absent-${process.pid}-${Math.floor(performance.now())}`);
+	const rows = byId(await runtime.run({ agentDir: root, offline: true, env: {} }));
+	assert.equal(rows["agent-dir"].status, "warn");
+	assert.match(rows["agent-dir"].detail, /does not exist/);
 });
 
 test("registry: an unreadable tool registry does not report zero collisions", async () => {
@@ -649,13 +662,39 @@ test("config: the same source in two shapes is reported without offering dedupe"
 
 // --- CLI -----------------------------------------------------------------
 
+/**
+ * Create a symlink, or skip the test where that needs a privilege the runner
+ * does not have. On Windows `fs.symlinkSync` needs Developer Mode or an elevated
+ * shell, so an unguarded call failed the binaries tests on windows-latest for a
+ * reason that has nothing to do with the check.
+ */
+function linkOrSkip(t, target, linkPath) {
+	try {
+		fs.symlinkSync(target, linkPath);
+	} catch (e) {
+		t.skip(`symlinks unavailable here (${e.code ?? e.message})`);
+	}
+}
+
 /** Run the CLI against a temporary agent root, never the developer's real one. */
 function runCli(root, args) {
 	try {
 		const stdout = execFileSync(process.execPath, [CLI, ...args], {
 			encoding: "utf8",
 			stdio: "pipe",
-			env: { ...process.env, PI_CODING_AGENT_DIR: root, https_proxy: "", all_proxy: "" },
+			// Every variable proxyFromEnv honours is cleared: on the corporate
+			// machine this tool targets, an inherited HTTPS_PROXY made these tests
+			// probe a real proxy and "a healthy temp root must not fail" could fail.
+			env: {
+				...process.env,
+				PI_CODING_AGENT_DIR: root,
+				https_proxy: "",
+				HTTPS_PROXY: "",
+				http_proxy: "",
+				HTTP_PROXY: "",
+				all_proxy: "",
+				ALL_PROXY: "",
+			},
 		});
 		return { status: 0, stdout };
 	} catch (e) {
@@ -729,15 +768,34 @@ test("CLI: a successful prune repair exits 0, not 1", () => {
 	// hid this because it re-reads the file on every run.
 	const root = healthyRoot();
 	const settings = path.join(root, "settings.json");
-	fs.writeFileSync(settings, JSON.stringify({ packages: ["npm:gone"] }));
+	// One live package stays behind: a prune that would empty the list is refused
+	// on purpose (see the next test), so this case needs something to keep.
+	installPkg(root, "keep", { pi: { extensions: ["./i.js"] } }, ["i.js"]);
+	fs.writeFileSync(settings, JSON.stringify({ packages: ["npm:gone", "npm:keep"] }));
 
 	assert.equal(runCli(root, ["--offline"]).status, 1);
 
 	const fixed = runCli(root, ["--offline", "--fix", "-y"]);
 	assert.match(fixed.stdout, /removed 1 entry/);
-	assert.deepEqual(JSON.parse(fs.readFileSync(settings, "utf8")).packages, []);
+	assert.deepEqual(JSON.parse(fs.readFileSync(settings, "utf8")).packages, ["npm:keep"]);
 	assert.equal(fixed.status, 0, fixed.stdout);
 	assert.doesNotMatch(fixed.stdout.split("Repairs")[1] ?? "", /✗ \d+ failed/, "the post-repair verdict still reports the repaired failure");
+});
+
+test("CLI: a prune that would empty the package list is refused", () => {
+	// A wrong agent directory — a mistyped PI_CODING_AGENT_DIR, a second profile —
+	// makes every entry look missing. Deleting them all leaves Pi booting with no
+	// packages and no error, so the repair has to refuse rather than trust its own
+	// resolution blindly.
+	const root = healthyRoot();
+	const settings = path.join(root, "settings.json");
+	fs.writeFileSync(settings, JSON.stringify({ packages: ["npm:gone", "npm:alsogone"] }));
+
+	const fixed = runCli(root, ["--offline", "--fix", "-y"]);
+	assert.match(fixed.stdout, /refusing to empty the list/);
+	assert.deepEqual(JSON.parse(fs.readFileSync(settings, "utf8")).packages, ["npm:gone", "npm:alsogone"]);
+	// Nothing was written, so no backup was left behind either.
+	assert.equal(fs.readdirSync(root).filter((f) => f.includes("checkup-bak")).length, 0);
 });
 
 test("CLI: a successful dedupe clears the duplicate warning", () => {
@@ -755,8 +813,12 @@ test("CLI: a successful dedupe clears the duplicate warning", () => {
 	assert.match(fixed.stdout, /removed 1 duplicate entry/);
 	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "settings.json"), "utf8")).packages, ["npm:a"]);
 	// The re-check has to see the deduplicated list, not the one the context
-	// parsed before the repair.
-	assert.doesNotMatch(fixed.stdout.split("Repairs")[1] ?? "", /duplicate packages/);
+	// parsed before the repair. The CLI prints only the verdict after a repair, so
+	// the verdict is what has to be clean — the old assertion looked for a report
+	// body that is never printed and could not fail.
+	const after = fixed.stdout.split("Repairs")[1] ?? "";
+	assert.match(after, /✓/);
+	assert.doesNotMatch(after, /[✗!]/, `post-repair verdict still reports a finding: ${after.trim()}`);
 });
 
 test("CLI: --fix without --yes only lists the repairs", () => {
@@ -921,5 +983,142 @@ test("network: an IPv6 loopback provider does not fail DNS", async () => {
 	assert.equal(dns.status, "skip");
 	assert.match(dns.detail, /loopback/);
 	assert.ok(!rows.some((r) => r.status === "fail"));
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+// --- regressions found in review -----------------------------------------
+
+test("packages: an entry that points at a file is not a missing package", async () => {
+	// It exists, so "1 missing from node_modules" was a false failure — and the
+	// prune repair it armed answers "nothing to prune", because prune asks
+	// isMissing() and a file is not missing.
+	const root = tmpRoot();
+	fs.mkdirSync(path.join(root, "ext"), { recursive: true });
+	fs.writeFileSync(path.join(root, "ext", "single.js"), "");
+	writeJson(path.join(root, "settings.json"), { packages: ["./ext/single.js"] });
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.notEqual(rows.dirs?.status, "fail");
+	assert.equal(rows["not-dir"].status, "warn");
+	assert.match(rows["not-dir"].detail, /single\.js/);
+	assert.equal(rows["not-dir"].fix, undefined, "there is nothing to delete, so no repair may be offered");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: a manifest that cannot be read is unproven, not broken", async () => {
+	// A directory where package.json should be is EISDIR, not a parse failure.
+	// Telling the user to reinstall over a filesystem problem is the same mistake
+	// the config group already avoids.
+	const root = tmpRoot();
+	const dir = path.join(root, "npm", "node_modules", "weird");
+	fs.mkdirSync(path.join(dir, "package.json"), { recursive: true });
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:weird"] });
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows["manifests-unreadable"].status, "warn");
+	assert.equal(rows.manifests.status, "skip");
+	assert.doesNotMatch(rows["manifests-unreadable"].detail, /Reinstall/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: an absolute pi.extensions entry is resolved where it points", async () => {
+	// path.join(dir, "/abs/file.js") re-roots the pattern under the package, so a
+	// manifest that loads fine at runtime was reported as a missing entry.
+	const root = tmpRoot();
+	const outside = path.join(root, "outside.js");
+	fs.writeFileSync(outside, "");
+	const pkgDir = installPkg(root, "abs", { pi: { extensions: [outside] } });
+	assert.ok(pkgDir);
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:abs"] });
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows.entries.status, "ok", rows.entries.detail);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: userinfo on a cleartext endpoint is neither sent nor hidden", async () => {
+	// The apiKey branch withheld the credential over http; a password embedded in
+	// the URL went out as a Basic header with no row saying so.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { gw: { baseUrl: "http://user:sekrit@example.invalid/v1" } } });
+	const rows = byId(await network.run(buildContext({ agentDir: root, offline: true })));
+	assert.equal(rows.cleartext.status, "warn");
+	assert.match(rows.cleartext.detail, /gw/);
+	assert.doesNotMatch(JSON.stringify(rows), /sekrit/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: offline mode still reports a baseUrl that is not a string", async () => {
+	// Whether a config value is even a string is a property of the config, not of
+	// the probe, so skipping the network must not skip the finding.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { gw: { baseUrl: 42 } } });
+	const rows = byId(await network.run(buildContext({ agentDir: root, offline: true })));
+	assert.equal(rows["baseUrl-shape"].status, "warn");
+	assert.equal(rows.providers.status, "skip");
+	// The skip used to say "no provider with a baseUrl", which the check had just
+	// disproved.
+	assert.match(rows.providers.detail, /gw/);
+	assert.match(rows.providers.detail, /not a string/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("binaries: a missing .bin still reports declared commands with no shim", async () => {
+	// The early return claimed "no npm packages installed" without reading
+	// settings, and never emitted the missing-shims row — the exact failure the
+	// module documents.
+	const root = tmpRoot();
+	installPkg(root, "pi-thing", { bin: { "pi-thing": "cli.js" } }, ["cli.js"]);
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:pi-thing"] });
+	const rows = byId(await binaries.run(buildContext({ agentDir: root })));
+	assert.equal(rows["bin-dir"].status, "skip");
+	assert.match(rows["bin-dir"].detail, /1 declared command/);
+	assert.equal(rows["missing-shims"].status, "warn");
+	assert.match(rows["missing-shims"].detail, /pi-thing/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("binaries: a .bin of plain files inspects no links and says so", async () => {
+	// npm writes shims as regular files on Windows. Counting entries instead of
+	// links printed "N entries all resolve" having inspected nothing.
+	const root = tmpRoot();
+	const binDir = path.join(root, "npm", "node_modules", ".bin");
+	fs.mkdirSync(binDir, { recursive: true });
+	fs.writeFileSync(path.join(binDir, "pi-thing"), "#!/bin/sh\n");
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const rows = byId(await binaries.run(buildContext({ agentDir: root })));
+	assert.equal(rows.dangling.status, "skip");
+	assert.match(rows.dangling.detail, /none of them links/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("runtime: a scheme-less proxy with credentials still has a host and port", async () => {
+	// `user:pass@proxy.corp:8080` is a shape curl accepts. The textual fallback
+	// rejected the userinfo, so the row warned forever while network.js probed
+	// happily through the same value.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const env = { ...process.env, https_proxy: "alice:s3cr3t@127.0.0.1:9" };
+	const rows = byId(await runtime.run(buildContext({ agentDir: root, env })));
+	assert.doesNotMatch(rows.proxy.detail, /without a usable host and port/);
+	assert.doesNotMatch(JSON.stringify(rows), /s3cr3t/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: an empty command registry is a skip, like the tools row", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi: fakePi({ packages: [] }, []) })));
+	assert.equal(rows.commands.status, "skip");
+	assert.equal(rows.tools.status, "skip");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: pi.extensions null declares no extension", async () => {
+	// It used to count as one, so the package was reported "declared an extension
+	// but registered no tool or command" for a manifest that declared none.
+	const root = tmpRoot();
+	installPkg(root, "nul", { pi: { extensions: null } });
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi: fakePi({ packages: ["npm:nul"] }, []) })));
+	assert.equal(rows.silent.status, "skip");
 	fs.rmSync(root, { recursive: true, force: true });
 });

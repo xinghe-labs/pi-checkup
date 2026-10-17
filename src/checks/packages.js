@@ -53,7 +53,9 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 
 	const missingDir = [];
 	const unreadableDir = [];
+	const notDir = [];
 	const brokenManifest = [];
+	const unreadableManifest = [];
 	const badSpecs = [];
 	const badExtensions = [];
 	const missingEntry = [];
@@ -92,13 +94,20 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 			continue;
 		}
 		if (!stat.isDirectory()) {
-			missingDir.push(redactSource(source));
+			// It exists. Calling a file "missing" reported a `fail` that the prune
+			// repair could never clear, because prune asks isMissing() and a file is
+			// not missing.
+			notDir.push(redactSource(source));
 			continue;
 		}
 		present++;
 		const manifest = readJson(path.join(dir, "package.json"));
 		if (!manifest.ok) {
-			brokenManifest.push(redactSource(source));
+			// A manifest that does not parse is broken. One this process could not
+			// read — EACCES, a file past the size limit — is unproven, and telling
+			// someone to reinstall over a permissions problem is wrong.
+			if (manifest.invalid) brokenManifest.push(redactSource(source));
+			else unreadableManifest.push(`${redactSource(source)} (${manifest.error ?? "unreadable"})`);
 			continue;
 		}
 		manifestRead++;
@@ -154,7 +163,24 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		);
 	}
 
+	// An entry that points at a file is not a package directory, and Pi cannot
+	// install from it. Reported without a `fix`: there is nothing to delete.
+	if (notDir.length) {
+		results.push(
+			row("not-dir", "not a package", "warn", `${notDir.length} entr${notDir.length === 1 ? "y points" : "ies point"} at a file, not a package directory: ${preview(notDir, 3)}`, {
+				hint: "A package entry has to be a directory containing package.json; declare a single-file extension inside a package's pi.extensions instead.",
+			}),
+		);
+	}
+
 	// --- manifests ---------------------------------------------------------
+	if (unreadableManifest.length) {
+		results.push(
+			row("manifests-unreadable", "unreadable manifests", "warn", `${unreadableManifest.length} package.json could not be inspected: ${preview(unreadableManifest, 2)}`, {
+				hint: "A permissions or size problem, not proof of a broken package. The entry files below are only checked for manifests that parsed.",
+			}),
+		);
+	}
 	if (brokenManifest.length) {
 		results.push(
 			row(

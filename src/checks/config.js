@@ -164,8 +164,14 @@ export async function run({
 		// A row that disappears reads as "fine" to anyone counting rows, so the
 		// absence of something to compare is stated rather than implied.
 		let why = "settings.json `packages` is not a list";
-		if (settings === undefined || settings === null) why = "settings.json could not be inspected";
-		else if (packageList === undefined) why = "no package list in settings.json";
+		// "not found" and "could not be read" are different states, and packages.js
+		// already words them differently. One state should not get two explanations
+		// in one report.
+		if (settings === undefined || settings === null) {
+			why = settingsFile && !exists(settingsFile)
+				? "settings.json not found — nothing to compare"
+				: "settings.json could not be inspected";
+		} else if (packageList === undefined) why = "no package list in settings.json";
 		results.push(row("duplicates", "duplicate packages", "skip", why));
 	} else {
 		// Two entries for one source are not always the same entry twice:

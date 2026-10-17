@@ -7,10 +7,26 @@ import path from "node:path";
 import dns from "node:dns/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
 const exec = promisify(execFile);
 
 export const TIMEOUT_MS = 8000;
+
+/**
+ * The version of this package, read from its own manifest.
+ *
+ * A corrupt or partial install must still produce a report, so a manifest that
+ * does not parse degrades to "unknown" instead of an unhandled SyntaxError.
+ */
+export function packageVersion() {
+	try {
+		const here = path.dirname(fileURLToPath(import.meta.url));
+		return JSON.parse(fs.readFileSync(path.join(here, "..", "package.json"), "utf8")).version ?? "unknown";
+	} catch {
+		return "unknown";
+	}
+}
 export const isWindows = process.platform === "win32";
 
 // Windows and the default macOS filesystem are case-insensitive, so two paths
@@ -85,8 +101,14 @@ export async function sh(cmd, args, timeout = TIMEOUT_MS) {
 export const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
 
 export function whichAll(name, env = process.env, { windows = isWindows } = {}) {
-	const exts = windows ? (env.PATHEXT ?? DEFAULT_PATHEXT).split(";").filter(Boolean) : [""];
-	const dirs = (env.PATH ?? "").split(path.delimiter).filter(Boolean);
+	// Windows exposes the same variable as `Path` when the environment block came
+	// from a case-preserving source (a spread copy of process.env, a child process
+	// launched by a shell). Reading only `PATH` there found zero commands and the
+	// report called every installed binary missing.
+	const extVar = windows ? (env.PATHEXT ?? env.Pathext ?? env.pathext ?? DEFAULT_PATHEXT) : "";
+	const exts = windows ? extVar.split(";").filter(Boolean) : [""];
+	const pathVar = env.PATH ?? env.Path ?? env.path ?? "";
+	const dirs = pathVar.split(path.delimiter).filter(Boolean);
 	const hits = [];
 	for (const dir of dirs) {
 		for (const ext of exts) {
@@ -280,8 +302,13 @@ function segmentMatches(pattern, name) {
 
 /** True when a manifest glob matches something on disk. Handles `*` segments only. */
 export function globExists(dir, pattern) {
-	if (!pattern.includes("*")) return exists(path.join(dir, pattern));
-	let cur = dir;
+	// A manifest may declare an absolute entry, or one that climbs out of the
+	// package with `..`. `path.join(dir, "/abs/file.js")` silently re-roots the
+	// pattern under `dir`, so a file that resolves fine at load time was reported
+	// as a missing entry — a `fail` with a reinstall hint.
+	const base = path.isAbsolute(pattern) ? path.parse(pattern).root : dir;
+	if (!pattern.includes("*")) return exists(path.join(base, pattern));
+	let cur = base;
 	for (const seg of pattern.replace(/\\/g, "/").split("/")) {
 		if (!seg) continue;
 		if (!seg.includes("*")) {
@@ -420,6 +447,27 @@ export function statusIsAlive(code) {
 }
 
 /**
+ * Whether a bare string is a host at all, rather than a token that happens to
+ * contain dots.
+ *
+ * A pasted JWT — `eyJhbGciOiJIUzI1NiJ9.eyJzdWIi…` — passes the character-class
+ * test above: base64url is letters, digits, `-` and `_`, and the dots separate
+ * segments exactly like a hostname separates labels. Only the shape tells them
+ * apart: no DNS label is 25 characters long, and every token payload segment is.
+ */
+function looksLikeHost(value) {
+	// IPv6 literal, with or without a port.
+	if (/^\[[0-9a-f:.]+\](:\d+)?(\/|$)/i.test(value)) return true;
+	const hostPart = value.split(/[\/:]/)[0];
+	const labels = hostPart.split(".").filter(Boolean);
+	if (!labels.length) return false;
+	if (labels.some((label) => label.length > 24)) return false;
+	const last = labels[labels.length - 1];
+	// A real host ends in a TLD-shaped label, or in an address octet.
+	return /^[a-z][a-z0-9-]*$/i.test(last) || /^\d{1,3}$/.test(last);
+}
+
+/**
  * A URL that is safe to put in a report: scheme, host, port and path, with the
  * userinfo and the query string dropped.
  *
@@ -437,7 +485,12 @@ export function redactUrl(raw) {
 		// no "." "/" or ":" in it, so the whole string was a secret the report
 		// reprinted into the terminal and the JSON.
 		const bare = scrubCredentials(text).split(/[?#]/)[0];
-		const hostShaped = /[./:]/.test(bare) && /^[a-z0-9._\-[\]]+(:\d+)?(\/[\w.\-/]*)?$/i.test(bare);
+		// The bracketed alternative is an IPv6 literal: its colons are part of the
+		// address, so the plain host character class cannot express it.
+		const hostShaped =
+			/[./:]/.test(bare) &&
+			/^(\[[0-9a-f:.]+\]|[a-z0-9._-]+)(:\d+)?(\/[\w.\-/]*)?$/i.test(bare) &&
+			looksLikeHost(bare);
 		return hostShaped ? bare : "(unparsable value)";
 	}
 	try {

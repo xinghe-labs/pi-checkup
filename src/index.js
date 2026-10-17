@@ -8,6 +8,7 @@
 import { runChecks } from "./checks/index.js";
 import { buildContext } from "./context.js";
 import { renderReport, renderVerdict, toJson } from "./render.js";
+import { packageVersion } from "./util.js";
 
 const USAGE = [
 	"/checkup            run every check",
@@ -43,7 +44,8 @@ export default function checkupExtension(pi) {
 			const results = await runChecks(checkCtx);
 
 			if (asJson) {
-				ctx.ui.notify(JSON.stringify(toJson(results), null, 2), "info");
+				const payload = toJson(results, { version: packageVersion(), node: process.versions.node, platform: process.platform });
+				ctx.ui.notify(JSON.stringify(payload, null, 2), "info");
 				return;
 			}
 

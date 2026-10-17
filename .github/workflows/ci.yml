@@ -15,6 +15,9 @@ concurrency:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    # A network probe that never returns is the exact failure this package
+    # reports on, so the job must not be able to hang for the 6-hour default.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -47,6 +50,17 @@ jobs:
           if (!r.summary || !Array.isArray(r.checks)) throw new Error('bad report shape');
           if (r.summary.total !== r.checks.length) throw new Error('summary disagrees with checks');
           if (r.checks.some((c) => 'fix' in c || 'fixTarget' in c)) throw new Error('repair metadata leaked');
+          // The summary is what a script reads, so it has to be a recount of the
+          // rows rather than a number the renderer happened to print.
+          const counts = { ok: 0, warn: 0, fail: 0, skip: 0 };
+          for (const c of r.checks) {
+            if (!c.group || !c.title || typeof c.detail !== 'string') throw new Error('check is missing a field: ' + JSON.stringify(c));
+            if (!(c.status in counts)) throw new Error('unknown status: ' + c.status);
+            counts[c.status] += 1;
+          }
+          for (const k of Object.keys(counts)) {
+            if (counts[k] !== r.summary[k]) throw new Error('summary ' + k + '=' + r.summary[k] + ' but rows say ' + counts[k]);
+          }
           const failed = r.summary.fail > 0;
           if (failed !== (process.argv[1] !== '0')) throw new Error('exit code ' + process.argv[1] + ' disagrees with fail count ' + r.summary.fail);
           console.log('report ok:', JSON.stringify(r.summary), 'exit', process.argv[1]);

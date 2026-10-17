@@ -96,7 +96,10 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 			group,
 			id: "commands",
 			title: "commands",
-			status: "ok",
+			// Same rule as the tools row: a readable but empty registry is not a
+			// pass. "0 registered across 0 sources" with a tick claims an answer
+			// the check does not have.
+			status: commands.length ? "ok" : "skip",
 			detail: `${commands.length} registered across ${commandsByOwner.size} sources, ${serverCount}`,
 		});
 	} else {
@@ -281,7 +284,10 @@ function declaredPackages(settings, root) {
 		const declared = manifest.data?.pi?.extensions;
 		let count = 1;
 		if (Array.isArray(declared)) count = declared.length;
-		else if (declared === undefined) count = 0;
+		// `null`, `false` and `""` declare nothing, exactly as packages.js reads
+		// them. Treating null as one extension reported "declared an extension but
+		// registered no tool or command" for a package that declared none.
+		else if (!declared) count = 0;
 		if (!count) continue;
 		out.push({ label: source.replace(/^npm:/, ""), dir: normalizePath(dir) });
 	}

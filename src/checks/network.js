@@ -89,6 +89,8 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 		// all: fetch() refuses a URL that carries credentials, so the probe failed
 		// with an error that quoted the password back. Moving them into a header
 		// makes the probe work and keeps them out of the URL and the message.
+		const key = provider.apiKey ?? provider.api_key;
+		const hasKey = typeof key === "string" && key.length > 0;
 		let userinfo = null;
 		let userinfoError = null;
 		if (url.username || url.password) {
@@ -99,27 +101,28 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 				const pair = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
 				userinfo = `Basic ${Buffer.from(pair).toString("base64")}`;
 			} catch {
-				userinfoError = `${name}: credentials in baseUrl are not valid percent-encoding, so they were not sent`;
+				// Only a blocker when the userinfo was the credential that would have
+				// been sent: with an apiKey configured, refusing to probe reported a
+				// credentials typo as an unreachable provider.
+				if (!hasKey) userinfoError = `${name}: credentials in baseUrl are not valid percent-encoding, so they were not sent`;
 			}
 			url.username = "";
 			url.password = "";
 		}
-		const key = provider.apiKey ?? provider.api_key;
-		const hasKey = typeof key === "string" && key.length > 0;
 		const loopback = isLoopbackHost(url.hostname);
-		if (hasKey && url.protocol === "http:" && !loopback) {
-			// Testing reachability is not worth putting a live credential on the
-			// wire in the clear, so the probe goes out unauthenticated and the
-			// config gets reported instead.
-			cleartext.push(name);
-		}
+		// One rule for every credential shape: over plain http to a host that is
+		// not this machine, nothing is sent. Testing reachability is not worth
+		// putting a live secret on the wire in the clear. The apiKey branch had
+		// this guard from the start; userinfo went out as a Basic header.
+		const cleartextAuth = (hasKey || userinfo) && url.protocol === "http:" && !loopback;
+		if (cleartextAuth) cleartext.push(name);
 		planned.push({
 			name,
 			url,
-			key: hasKey && !(url.protocol === "http:" && !loopback) ? key : null,
+			key: hasKey && !cleartextAuth ? key : null,
 			// An explicit apiKey wins over userinfo; a URL carrying both is a user
 			// mid-migration, not a configuration to guess about.
-			userinfo: hasKey ? null : userinfo,
+			userinfo: hasKey || cleartextAuth ? null : userinfo,
 			userinfoError,
 		});
 	}
@@ -130,8 +133,21 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 				id: "cleartext",
 				title: "cleartext auth",
 				status: "warn",
-				detail: `${cleartext.join(", ")} use http:// with an apiKey configured`,
-				hint: "Switch the baseUrl to https://, or use a host on localhost. The reachability probe was sent without the key.",
+				detail: `${cleartext.join(", ")} use http:// with credentials configured`,
+				hint: "Switch the baseUrl to https://, or use a host on localhost. The probe was sent without the credential, which is also why a 401 here is not a broken endpoint.",
+			}
+		: null;
+
+	// Built once so offline mode can emit it too: whether a baseUrl is even a
+	// string is a property of the config, not of the probe.
+	const shapeRow = badBaseUrl.length
+		? {
+				group,
+				id: "baseUrl-shape",
+				title: "baseUrl shape",
+				status: "warn",
+				detail: `${badBaseUrl.join(", ")} — baseUrl is not a string, so the endpoint was not probed`,
+				hint: "baseUrl has to be a quoted string like \"https://api.example.com/v1\".",
 			}
 		: null;
 
@@ -142,7 +158,9 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 				id: "providers",
 				title: "providers",
 				status: "skip",
-				detail: `offline mode — ${planned.length} configured endpoint(s) not probed`,
+				detail: badBaseUrl.length
+					? `offline mode — ${planned.length} endpoint(s) not probed; ${badBaseUrl.join(", ")} — baseUrl is not a string`
+					: `offline mode — ${planned.length} configured endpoint(s) not probed`,
 				hint: "Re-run without --offline to test reachability.",
 			},
 			// Emitted as a skip rather than omitted: a row that vanishes in offline
@@ -152,6 +170,7 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			{ group, id: "dns", title: "dns", status: "skip", detail: "offline mode — no host resolved" },
 		];
 		if (cleartextRow) rows.push(cleartextRow);
+		if (shapeRow) rows.push(shapeRow);
 		return rows;
 	}
 
@@ -186,16 +205,20 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			id: "providers",
 			title: "providers",
 			status: "skip",
-			detail: "no provider with a baseUrl in models.json",
+			detail: badBaseUrl.length
+				? `no provider with a usable baseUrl — ${badBaseUrl.join(", ")} is not a string`
+				: "no provider with a baseUrl in models.json",
 		});
 	} else if (!unhealthy.length && unprobed.length) {
-		// Nothing was sent, so there is nothing to call healthy.
+		// Nothing was sent, so there is nothing to call healthy — but when some
+		// endpoints did answer, saying only "skipped" hid the ones that were proven.
+		const answered = outcomes.length - unprobed.length;
 		results.push({
 			group,
 			id: "providers",
 			title: "providers",
 			status: "skip",
-			detail: unprobed.map((o) => o.detail).join("; "),
+			detail: `${answered ? `${answered} endpoint(s) reachable; ` : ""}${unprobed.map((o) => o.detail).join("; ")}`,
 		});
 	} else if (!unhealthy.length) {
 		results.push({
@@ -217,17 +240,7 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 	}
 
 	if (cleartextRow) results.push(cleartextRow);
-
-	if (badBaseUrl.length) {
-		results.push({
-			group,
-			id: "baseUrl-shape",
-			title: "baseUrl shape",
-			status: "warn",
-			detail: `${badBaseUrl.join(", ")} — baseUrl is not a string, so the endpoint was not probed`,
-			hint: "baseUrl has to be a quoted string like \"https://api.example.com/v1\".",
-		});
-	}
+	if (shapeRow) results.push(shapeRow);
 
 	// --- DNS ---------------------------------------------------------------
 	// A host that resolves to loopback while the baseUrl is remote, or does not

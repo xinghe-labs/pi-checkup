@@ -177,21 +177,19 @@ export function applyDedupePackages(target) {
 	if (!settings.ok) return unreadable(target, settings);
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to dedupe" };
 
-	const first = dedupePlan(settings.data.packages);
+	const plan = dedupePlan(settings.data.packages);
 	const suffix = (mixed) =>
 		mixed ? ` (${mixed} entr${mixed === 1 ? "y" : "ies"} share a source but differ in shape and were left alone)` : "";
-	if (!first.removed) return { ok: true, message: `nothing to dedupe${suffix(first.mixed)}` };
+	if (!plan.removed) return { ok: true, message: `nothing to dedupe${suffix(plan.mixed)}` };
 
+	// The read above already happened after the confirmation prompt, and every
+	// step from here to writeAtomic is synchronous, so the file cannot change in
+	// between — a second read would prove nothing. Backing up before the plan was
+	// known left a stray `.checkup-bak-*` beside a healthy config on runs that
+	// repaired nothing.
 	const backup = copyBackup(target);
-	// Re-read after the backup: the confirmation prompt can sit open
-	// indefinitely, and a `pi install` in another shell meanwhile would be
-	// silently undone by writing the snapshot that was checked.
-	const fresh = readJson(target);
-	if (!fresh.ok) return { ok: false, message: `${path.basename(target)} changed and is no longer valid JSON — nothing written` };
-	const plan = dedupePlan(Array.isArray(fresh.data?.packages) ? fresh.data.packages : []);
-	if (!plan.removed) return { ok: true, message: `nothing to dedupe any more — ${path.basename(target)} changed since the check` };
-	fresh.data.packages = plan.kept;
-	writeAtomic(target, `${JSON.stringify(fresh.data, null, 2)}\n`);
+	settings.data.packages = plan.kept;
+	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
 		ok: true,
 		message: `removed ${plan.removed} duplicate entr${plan.removed === 1 ? "y" : "ies"} from ${path.basename(target)}${suffix(plan.mixed)} (backup: ${path.basename(backup)})`,
@@ -241,18 +239,24 @@ export function applyPruneMissingPackages(target, root) {
 	if (!settings.ok) return unreadable(target, settings);
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to prune" };
 
-	const first = prunePlan(settings.data.packages, root);
-	if (!first.removed.length) return { ok: true, message: "nothing to prune" };
+	const plan = prunePlan(settings.data.packages, root);
+	if (!plan.removed.length) return { ok: true, message: "nothing to prune" };
+	// A wrong agent directory — a mistyped PI_CODING_AGENT_DIR, a second profile,
+	// a Pi layout that keeps packages elsewhere — makes every entry look missing.
+	// Emptying the list would leave Pi booting with no packages and no error, so
+	// the repair refuses instead of trusting its own resolution blindly.
+	if (plan.removed.length === settings.data.packages.length) {
+		return {
+			ok: false,
+			message: `all ${plan.removed.length} package entr${plan.removed.length === 1 ? "y looks" : "ies look"} missing — refusing to empty the list. Check that the agent directory is the one Pi uses (PI_CODING_AGENT_DIR).`,
+		};
+	}
 
+	// Same reasoning as dedupe: the read above is post-prompt, and the rest of
+	// this function is synchronous.
 	const backup = copyBackup(target);
-	// Re-read after the backup for the same reason as dedupe: anything installed
-	// while the prompt was open must survive.
-	const fresh = readJson(target);
-	if (!fresh.ok) return { ok: false, message: `${path.basename(target)} changed and is no longer valid JSON — nothing written` };
-	const plan = prunePlan(Array.isArray(fresh.data?.packages) ? fresh.data.packages : [], root);
-	if (!plan.removed.length) return { ok: true, message: `nothing to prune any more — ${path.basename(target)} changed since the check` };
-	fresh.data.packages = plan.kept;
-	writeAtomic(target, `${JSON.stringify(fresh.data, null, 2)}\n`);
+	settings.data.packages = plan.kept;
+	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
 		ok: true,
 		message: `removed ${plan.removed.length} entr${plan.removed.length === 1 ? "y" : "ies"} with no directory on disk (${plan.removed.slice(0, 3).join(", ")}${plan.removed.length > 3 ? ", ..." : ""}); backup: ${path.basename(backup)}`,

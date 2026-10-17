@@ -37,7 +37,7 @@ function stagingRow(staging, danglingStaging) {
 	};
 }
 
-function danglingRow(dangling, entryCount) {
+function danglingRow(dangling, linkCount, entryCount) {
 	if (dangling.length) {
 		return {
 			group,
@@ -53,8 +53,20 @@ function danglingRow(dangling, entryCount) {
 	if (!entryCount) {
 		return { group, id: "dangling", title: "dangling links", status: "skip", detail: "no entries in .bin to check" };
 	}
-	const noun = entryCount === 1 ? "entry" : "entries";
-	return { group, id: "dangling", title: "dangling links", status: "ok", detail: `${entryCount} ${noun} all resolve` };
+	// npm writes shims as plain files on Windows, so a populated .bin can contain
+	// zero symlinks. Counting entries instead of links printed "19 entries all
+	// resolve" having inspected nothing.
+	if (!linkCount) {
+		return {
+			group,
+			id: "dangling",
+			title: "dangling links",
+			status: "skip",
+			detail: `${entryCount} entries in .bin, none of them links (Windows shims are plain files)`,
+		};
+	}
+	const noun = linkCount === 1 ? "link" : "links";
+	return { group, id: "dangling", title: "dangling links", status: "ok", detail: `${linkCount} ${noun} all resolve` };
 }
 
 /** bin names that installed packages declare in their own manifests. */
@@ -84,22 +96,43 @@ function declaredBins(settings, root) {
 }
 
 export async function run({ settings, agentDir: root, binDir = path.join(root, "npm", "node_modules", ".bin"), env = process.env }) {
+	// Computed before the early returns: a package whose bins were never linked is
+	// exactly the state where .bin is missing or thin, and the old early return
+	// reported "no npm packages installed" without ever reading settings.
+	const ownBins = declaredBins(settings, root);
 
 	if (!exists(binDir)) {
 		// An unreadable .bin is not an empty one. Saying "no npm packages
 		// installed" for an EACCES sends the user looking in the wrong place.
-		return [
+		const missing = isMissing(binDir);
+		const declared = ownBins.size;
+		const rows = [
 			{
 				group,
 				id: "bin-dir",
 				title: "bin dir",
-				status: isMissing(binDir) ? "skip" : "warn",
-				detail: isMissing(binDir) ? `${binDir} does not exist (no npm packages installed)` : `cannot read ${binDir}`,
-				hint: isMissing(binDir)
-					? undefined
+				status: missing ? "skip" : "warn",
+				detail: missing
+					? `${binDir} does not exist${declared ? ` (${declared} declared command(s) therefore have no shim)` : ""}`
+					: `cannot read ${binDir}`,
+				hint: missing
+					? declared
+						? "npm creates these links during install. Reinstall the owning package without --ignore-scripts."
+						: undefined
 					: "A permissions or filesystem problem, not a missing install. Check ownership of the agent directory.",
 			},
 		];
+		if (declared) {
+			rows.push({
+				group,
+				id: "missing-shims",
+				title: "missing shims",
+				status: "warn",
+				detail: `${declared} declared command(s) never linked into .bin: ${[...ownBins].sort().slice(0, 6).join(", ")}`,
+				hint: "npm creates these links during install. Reinstall the owning package without --ignore-scripts.",
+			});
+		}
+		return rows;
 	}
 
 	let entries;
@@ -121,6 +154,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 	// --- dangling symlinks -------------------------------------------------
 	const dangling = [];
 	const unreadableLinks = [];
+	let linkCount = 0;
 	const staging = [];
 	const danglingStaging = [];
 	for (const entry of entries) {
@@ -142,6 +176,9 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 			if (broken) danglingStaging.push(entry);
 			continue;
 		}
+		// Counted after the staging branch: a half-written npm temp link is not a
+		// command anyone can run, so it cannot be part of "N links all resolve".
+		linkCount++;
 		if (broken) dangling.push(entry);
 		else if (unreadable) unreadableLinks.push(entry);
 	}
@@ -149,7 +186,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 	// Real breakage stays a failure; a half-finished install is reported as its
 	// own thing, because the fix is "let the install finish", not "reinstall".
 	const stagingFindings = stagingRow(staging, danglingStaging);
-	const results = [danglingRow(dangling, entries.length - staging.length), ...(stagingFindings ? [stagingFindings] : [])];
+	const results = [danglingRow(dangling, linkCount, entries.length - staging.length), ...(stagingFindings ? [stagingFindings] : [])];
 	if (unreadableLinks.length) {
 		results.push({
 			group,
@@ -165,7 +202,6 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 	// A package can declare a `bin` and still have no shim, because npm skips
 	// linking when install scripts are blocked. Driven off the manifests, not off
 	// .bin, so a command that was never installed is not silently ignored.
-	const ownBins = declaredBins(settings, root);
 	const entryNames = new Set(entries.map((e) => e.replace(/\.(cmd|ps1|exe|bat)$/i, "")));
 	const missingShims = [...ownBins].filter((name) => !entryNames.has(name)).sort();
 	if (missingShims.length) {

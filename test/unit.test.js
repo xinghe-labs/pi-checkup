@@ -291,3 +291,48 @@ test("scrubCredentials removes a userinfo and a query string from an error messa
 	assert.match(scrubCredentials(message), /https:\/\/\*\*\*@host\/v1\/models/);
 	assert.doesNotMatch(scrubCredentials("failed for https://host/v1?token=abc"), /token=abc/);
 });
+
+test("redactUrl does not reprint a pasted token that looks host-shaped", () => {
+	// A JWT is base64url labels joined by dots — the same characters a hostname
+	// uses. Only the shape (no DNS label is 25 characters long) tells them apart,
+	// and this function exists precisely so the terminal and --json never echo it.
+	const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+	assert.equal(redactUrl(jwt), "(unparsable value)");
+	// Host shapes keep working, including the ones with no scheme.
+	assert.equal(redactUrl("api.example.com/v1?key=abc"), "api.example.com/v1");
+	assert.equal(redactUrl("localhost:11434/v1"), "localhost:11434/v1");
+	assert.equal(redactUrl("[::1]:10808"), "[::1]:10808");
+	assert.equal(redactUrl("192.168.1.5:8080"), "192.168.1.5:8080");
+});
+
+test("whichAll reads the Windows Path spelling too", () => {
+	// A spread copy of process.env on Windows can carry `Path`, and reading only
+	// PATH then found nothing and called every installed binary missing.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "checkup-path-"));
+	try {
+		fs.writeFileSync(path.join(dir, "tool.exe"), "");
+		// `.exe`, not `.EXE`: this test also runs on a case-sensitive filesystem.
+		const hits = whichAll("tool", { Path: dir, PATHEXT: ".exe" }, { windows: true });
+		assert.equal(hits.length, 1);
+		assert.equal(hits[0], path.join(dir, "tool.exe"));
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("globExists honours an absolute pattern instead of re-rooting it", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "checkup-glob-"));
+	const pkg = path.join(dir, "pkg");
+	fs.mkdirSync(pkg, { recursive: true });
+	const outside = path.join(dir, "outside.js");
+	fs.writeFileSync(outside, "");
+	try {
+		// path.join(pkg, "/abs/file.js") would look under pkg and report a file that
+		// loads fine as missing.
+		assert.equal(globExists(pkg, outside), true);
+		assert.equal(globExists(pkg, path.join(dir, "nope.js")), false);
+		assert.equal(globExists(pkg, "../outside.js"), true);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
