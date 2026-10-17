@@ -113,7 +113,7 @@ Registry
                        sources
   ✓ commands           95 registered across 21 sources, 0 MCP server(s)
   ✓ attribution        49 tool(s) from 12 source(s): pi-lens (13), builtin (10),
-                       pi-web-access (5), pi-subagents (5) +8 more
+                       pi-web-access (5), pi-subagents (5), ... 8 more
   ✓ tool collisions    none
   ✓ command collisions none
   ✓ silent packages    none
@@ -184,7 +184,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Duplicate package entries | The package loads twice and the second registration can shadow the first |
 | | Unset env references | `$NAME` / `${NAME}` in the `models.json` fields Pi actually interpolates (`apiKey`, header values) with nothing in the environment |
 | | Backups | Whether a broken config could be recovered at all |
-| **Runtime** | Agent directory | Whether the directory being inspected exists at all — without it most other rows skip, which would otherwise read as a clean install |
+| **Runtime** | Agent directory | Whether the directory being inspected exists and can be listed — without it most other rows skip, which would otherwise read as a clean install |
 | | Node version, launcher, disk, proxy | The host conditions Pi itself needs |
 | **Any** | Crashed or timed-out module | A check that threw or ran past 30s is reported as a failure naming the module, and every other section still prints |
 
@@ -219,10 +219,11 @@ Each entry matches a row's `id`, its `Group:id` form, or its title. A suppressed
 
 ```text
   · unreachable bins   ignored via PI_CHECKUP_IGNORE (would be warn): 6 package
-                       command(s) not on PATH: ...
+                       command(s) not on PATH: pi-web-access-mcp, pi-subagents,
+                       pi-mcp-adapter, pi-lens, pi-lens-mcp, pi-lens-analyze
 ```
 
-Suppression is never silent, and it drops the row's repair offer so a hidden finding cannot be fixed behind your back. Export it from your shell profile if you want it to apply inside Pi too.
+Suppression is never silent, and it drops the row's repair offer so a hidden finding cannot be fixed behind your back. It applies to failures too: a suppressed `fail` no longer affects the exit code, which is the point of the variable — use it for a state you have decided to accept, not to turn a red build green. Export it from your shell profile if you want it to apply inside Pi too.
 
 ## JSON output
 

@@ -2,9 +2,26 @@
 import path from "node:path";
 import fs from "node:fs";
 import net from "node:net";
-import { bareHost, curlProbe, exists, humanBytes, isMissing, isWindows, proxyFromEnv, redactProxy, whichAll } from "../util.js";
+import { bareHost, curlProbe, describeFsError, exists, humanBytes, isMissing, isWindows, proxyFromEnv, redactProxy, whichAll } from "../util.js";
 
 export const group = "Runtime";
+
+/**
+ * Can this directory actually be listed?
+ *
+ * `exists()` is `access(F_OK)`, which only answers "something is there" — a
+ * mode-000 directory and a regular file both pass it. Everything this group
+ * reports about an install is read out of the directory, so a directory that
+ * cannot be listed has to be named as such.
+ */
+function canOpen(dir) {
+	try {
+		fs.readdirSync(dir);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 const MIN_NODE_MAJOR = 20;
 
@@ -30,15 +47,20 @@ export async function run({ offline = false, agentDir: root, env = process.env }
 			detail: `${root} does not exist — nothing about an install was inspected`,
 			hint: "Run `pi` once to create it, or set PI_CODING_AGENT_DIR to the directory your install uses.",
 		});
-	} else if (root && !exists(root)) {
+	} else if (root && !canOpen(root)) {
 		// A directory this process cannot open is not a missing one, and "run pi
-		// once to create it" is the wrong advice for a permissions problem.
+		// once to create it" is the wrong advice for a permissions problem. The
+		// test is a read, not an existence check: `access(F_OK)` succeeds on a
+		// mode-000 directory, so the old branch never fired for the case it was
+		// written for.
 		results.push({
 			group,
 			id: "agent-dir",
 			title: "agent dir",
 			status: "warn",
-			detail: `${root} exists but could not be opened — nothing about an install was inspected`,
+			// The directory could not be listed. `isMissing()` already ruled out a
+			// path that is not there, so the finding is about access, not creation.
+			detail: `${root} could not be opened — nothing about an install was inspected`,
 			hint: "A permissions or filesystem problem. Check ownership of the directory, or set PI_CODING_AGENT_DIR to the one your install uses.",
 		});
 	}
@@ -144,9 +166,7 @@ export async function run({ offline = false, agentDir: root, env = process.env }
 			status: "skip",
 			// A bare errno is the least polished line a first run ever shows, and on a
 			// machine that never ran Pi it is the expected state, not an error.
-			detail: isMissing(root)
-				? "agent directory does not exist yet — no volume to report on"
-				: `cannot stat ${root}: ${String(e?.message ?? e)}`,
+			detail: isMissing(root) ? "agent directory does not exist yet — no volume to report on" : `could not stat ${root}: ${describeFsError(e)}`,
 		});
 	}
 

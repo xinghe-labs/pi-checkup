@@ -15,6 +15,7 @@ import {
 	scrubCredentials,
 	statusIsAlive,
 	timedFetch,
+	truncateList,
 } from "../util.js";
 
 export const group = "Network";
@@ -133,11 +134,10 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 		// would be guessing. The endpoint is left unprobed rather than probed with
 		// a different URL, because a 404 for the stripped request is not a fact
 		// about the configured endpoint.
+		// Not probed at all (see the probe loop): dropping the query string and
+		// sending the rest would answer a question the config did not ask.
 		const withheld = cleartextAuth && hasQuery;
-		if (withheld) {
-			url.search = "";
-			queryWithheld.push(name);
-		}
+		if (withheld) queryWithheld.push(name);
 		planned.push({
 			name,
 			url,
@@ -278,7 +278,7 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			id: "providers",
 			title: "providers",
 			status: unhealthy.some((o) => o.status === "fail") ? "fail" : "warn",
-			detail: `${unhealthy.length} of ${outcomes.length} unhealthy: ${unhealthy.map((o) => o.name).join(", ")}`,
+			detail: `${unhealthy.length} of ${outcomes.length} unhealthy: ${truncateList(unhealthy.map((o) => o.name), 6)}`,
 			hint: `${unhealthy.map((o) => o.detail).join("; ")}. Check the baseUrl, whether the server is running, and whether a proxy is required.`,
 		});
 	}
@@ -361,13 +361,24 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
  * proxy natively; it is already a dependency of the opt-in forwarding test.
  */
 async function probeEndpoint(url, { headers, proxy }) {
+	// A header value with a newline or a character outside Latin-1 is not an HTTP
+	// header value. fetch refuses to build the request; curl would silently send a
+	// different key (line breaks stripped) and a 401 from that request says nothing
+	// about the configured one. Neither path is allowed to make the attempt, and
+	// neither message may quote the value.
+	const badHeader = Object.values(headers ?? {}).some(
+		(value) => value !== undefined && value !== null && /[\r\n]|[^\u0000-\u00ff]/.test(String(value)),
+	);
+	if (badHeader) {
+		return { status: "skip", detail: "not probed: a configured header value is not a valid HTTP header value (a newline or a non-Latin-1 character)" };
+	}
 	if (!proxy) {
 		const res = await timedFetch(url.toString(), { headers });
 		// A request Node refuses to construct — a header value with a newline or a
 		// character outside Latin-1 — never opens a socket. Blaming the endpoint
 		// for it is the same mistake the curl path already avoids with
 		// `setupFailed`, and the config is where the fix is.
-		if (!res.status && /Headers|invalid header|Failed to parse URL|Invalid value/i.test(res.error ?? "")) {
+		if (!res.status && /Headers|invalid header|Failed to parse URL|Invalid value|ByteString|Cannot convert argument/i.test(res.error ?? "")) {
 			// Not the error text: undici quotes the offending value, and the value
 			// here is the apiKey. `Headers.append: "sk-…" is an invalid header
 			// value` would put a key in the report, the TUI notification and the

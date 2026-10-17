@@ -130,6 +130,26 @@ export function whichAll(name, env = process.env, { windows = isWindows } = {}) 
 }
 
 /**
+ * A filesystem error in words a user can act on.
+ *
+ * Node's messages carry an errno, the syscall and the absolute path —
+ * `EISDIR: illegal operation on a directory, read` — which is the least polished
+ * text in the whole report, and it lands in the row that is supposed to explain
+ * what to do next.
+ */
+export function describeFsError(e) {
+	const code = e?.code;
+	if (code === "EACCES" || code === "EPERM") return "permission denied";
+	if (code === "EISDIR") return "it is a directory, not a file";
+	if (code === "ELOOP") return "too many symbolic links";
+	if (code === "EMFILE" || code === "ENFILE") return "too many open files";
+	if (code === "ENOENT" || code === "ENOTDIR") return "not found";
+	if (code === "ENOSPC") return "no space left on the device";
+	if (code === "EIO") return "the device reported an I/O error";
+	return code ? `could not be read (${code})` : String(e?.message ?? e);
+}
+
+/**
  * Read a JSON file. Returns a discriminated result instead of throwing so that
  * callers can report "this file is broken" as a finding rather than a crash.
  */
@@ -140,13 +160,13 @@ export function readJson(file) {
 			return { ok: false, error: `${humanBytes(size)} is too large to inspect` };
 		}
 	} catch (e) {
-		return { ok: false, missing: e?.code === "ENOENT", error: String(e?.message ?? e) };
+		return { ok: false, missing: e?.code === "ENOENT", error: describeFsError(e) };
 	}
 	let raw;
 	try {
 		raw = fs.readFileSync(file, "utf8");
 	} catch (e) {
-		return { ok: false, missing: e?.code === "ENOENT", error: String(e?.message ?? e) };
+		return { ok: false, missing: e?.code === "ENOENT", error: describeFsError(e) };
 	}
 	try {
 		return { ok: true, data: JSON.parse(raw) };
@@ -264,7 +284,22 @@ export function ownerOf(sourcePath) {
 		return parent === "extensions" ? `local:${parts.at(-1)}` : `local:${parent}`;
 	}
 	const rest = normalized.slice(i + marker.length).split("/");
-	return rest[0]?.startsWith("@") ? `${rest[0]}/${rest[1]}` : rest[0];
+	const name = rest[0]?.startsWith("@") ? `${rest[0]}/${rest[1]}` : rest[0];
+	// `/x/node_modules/` has nothing after the marker; returning "" rendered the
+	// attribution row as " (3)" — a count with no owner.
+	return name || "unknown";
+}
+
+/**
+ * A list, cut to `max` items with a count of what was left out.
+ *
+ * Every row that prints a list had its own version of this, and three of them
+ * simply stopped — a reader could not tell a complete list from a truncated one.
+ */
+export function truncateList(list, max, separator = ", ") {
+	const items = Array.from(list ?? []);
+	if (items.length <= max) return items.join(separator);
+	return `${items.slice(0, max).join(separator)}${separator}... ${items.length - max} more`;
 }
 
 /** Read the `source` out of a settings `packages` entry, whatever shape it has. */
@@ -370,7 +405,12 @@ export async function timedFetch(url, init = {}, timeout = TIMEOUT_MS) {
 		await res.body?.cancel().catch(() => {});
 		return { ok: true, status: res.status };
 	} catch (e) {
-		return { ok: false, status: 0, error: String(e?.message ?? e) };
+		// `fetch failed` is the whole message for every network fault; the reason is
+		// on `cause` (ECONNREFUSED, a header Node refuses to build, a timeout). A
+		// report that says only "fetch failed" leaves the user with nothing.
+		const cause = e?.cause?.message ?? e?.cause?.code ?? "";
+		const message = String(e?.message ?? e);
+		return { ok: false, status: 0, error: cause ? `${message} — ${String(cause)}` : message };
 	} finally {
 		clearTimeout(timer);
 	}
@@ -621,9 +661,14 @@ export function redactProxy(raw) {
 export function redactSource(spec) {
 	const text = String(spec ?? "");
 	if (text.includes("://")) return scrubCredentials(text);
-	// `npm:pkg`, `git:…`, `file:./x`: a scheme is what makes a string a source,
-	// and scrubbing is enough for the shapes that carry a credential inside one.
-	if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return scrubCredentials(text);
+	// `git@github.com:me/x` is a git source in scp form: one "@", no password, and
+	// hiding it made a legitimate entry unreadable.
+	if (/^[a-z0-9._-]+@[a-z0-9._-]+:[^\s@]*$/i.test(text)) return scrubCredentials(text);
+	// `npm:pkg`, `git:…`, `file:./x`: a scheme is what makes a string a source.
+	// Only the schemes Pi understands, though — `alice:s3cr3t` also starts with
+	// `word:`, and treating it as a scheme printed a username and password as if
+	// they were a package name.
+	if (/^(npm|git|file|https?|ssh|link):/i.test(text)) return scrubCredentials(text);
 	// No scheme, but a path: `./ext/single.js` and `/opt/ext` are local sources
 	// with no credential in them, and hiding them made a real finding unreadable.
 	// Globs and scoped paths are sources too: `dist/*.js` and `./packages/@acme/ext`
@@ -654,6 +699,17 @@ export function scrubCredentials(text) {
 			// protocol-relative paste, it fails `new URL` without a base, and it used
 			// to be echoed unchanged by the very branch that exists to hide it.
 			.replace(/([a-z][a-z0-9+.-]*:)?\/\/[^/\s@]+@/gi, "$1//***@")
+			// Userinfo without the slashes. `alice:pw@host:22` and `alice:pw@host/x`
+			// are the shapes a hand-pasted DSN has, and the rule above only matches
+			// the `//` form — so `user:pass@host` reached the report verbatim.
+			// A single `user@host` has no colon before the "@" and is left alone: it
+			// is a username, not a credential.
+			// The user part may not be a scheme: `npm:pi-lens@0.9.1` is a package
+			// spec, and masking it produced "***@0.9.1" in the version-pin row.
+			// A ":" or "/" before the user part is allowed, so the second colon in
+			// `npm:alice:pw@host` and the single slash in `https:/alice:pw@host`
+			// still start a match.
+			.replace(/(^|[\s"'=(,:/])(?!(?:npm|git|file|https?|ssh|link):)([^\s/@:'"]+):([^\s/@]*?)@/g, "$1***@")
 			// A query string is dropped whole rather than masked: it is where a pasted
 			// `?key=sk-…` lives, and nothing in a report needs it.
 			.replace(/\?[^\s]*/g, "")

@@ -17,6 +17,7 @@ import {
 	resolvePackageDir,
 	scrubCredentials,
 	sourceOf,
+	truncateList,
 } from "../util.js";
 
 export const group = "Packages";
@@ -40,7 +41,7 @@ function describeSpec(spec) {
 	if (kind === "string") return `a ${spec.length}-character string`;
 	if (kind !== "object") return `${kind} ${String(spec)}`.slice(0, 40);
 	const keys = Object.keys(spec);
-	return keys.length ? `an object with keys ${keys.slice(0, 4).join(", ")}` : "an empty object";
+	return keys.length ? `an object with keys ${truncateList(keys, 4)}` : "an empty object";
 }
 
 export async function run({ settings, settingsLoaded, agentDir: root, settingsFile, settingsSource }) {
@@ -66,7 +67,10 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 		// A missing settings.json is not a fault: Pi boots on defaults and writes
 		// the file the first time a setting changes. A file that exists but did not
 		// parse is a fault, and Config already says so.
-		const absent = Boolean(settingsFile) && isMissing(settingsFile);
+		// Only when nothing was loaded: a running session can supply an empty
+		// `packages` list while no settings.json exists, and blaming the absent
+		// file for a conclusion that came from the session was wrong.
+		const absent = !settingsLoaded && Boolean(settingsFile) && isMissing(settingsFile);
 		const where = settingsSource === "runtime" ? "the running session" : "settings.json";
 		let detail = `no packages in ${where}`;
 		// "could not be inspected", not "could not be read": an oversized file was
@@ -174,7 +178,8 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 		if (missing.length) missingEntry.push(`${redactSource(source)} -> ${missing.map(redactSource).join(", ")}`);
 	}
 
-	const preview = (list, n) => list.slice(0, n).join(", ") + (list.length > n ? ", ..." : "");
+	// Shared with the other modules so a cut list always says how much was cut.
+	const preview = (list, n) => truncateList(list, n);
 	const row = makeRow(group);
 
 	// --- package directories -----------------------------------------------

@@ -7,7 +7,7 @@
 //      PATH, so the name resolves to something else entirely.
 import path from "node:path";
 import fs from "node:fs";
-import { exists, isMissing, isWindows, readJson, resolvePackageDir, sameCommand, sourceOf, whichAll } from "../util.js";
+import { exists, isMissing, isWindows, readJson, resolvePackageDir, sameCommand, sourceOf, truncateList, whichAll } from "../util.js";
 
 export const group = "Binaries";
 
@@ -118,8 +118,9 @@ function declaredBins(settings, root) {
  * in front of it then contradicts what the reader can see.
  */
 function names(list, max) {
-	const shown = list.slice(0, max).join(", ");
-	return list.length > max ? `${shown}, ... ${list.length - max} more` : shown;
+	// One truncation helper for the whole package: the marker has to look the same
+	// in every row, and it has to say how much was left out.
+	return truncateList(list, max);
 }
 
 export async function run({ settings, agentDir: root, binDir = path.join(root, "npm", "node_modules", ".bin"), env = process.env }) {

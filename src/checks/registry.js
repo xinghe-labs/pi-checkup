@@ -4,7 +4,7 @@
 // are installed, but only the running session knows which tools and commands
 // they really registered, under what names, and who lost a collision.
 import path from "node:path";
-import { normalizePath, ownerOf, readJson, redactSource, resolvePackageDir, scrubCredentials, sourceOf } from "../util.js";
+import { normalizePath, ownerOf, readJson, redactSource, resolvePackageDir, scrubCredentials, sourceOf, truncateList } from "../util.js";
 
 export const group = "Registry";
 
@@ -22,7 +22,10 @@ function call(fn) {
 		if (Array.isArray(value)) return { ok: true, value };
 		return { ok: false, error: `unexpected registry shape (${value === null ? "null" : typeof value})` };
 	} catch (e) {
-		return { ok: false, error: String(e?.message ?? e).slice(0, 120) };
+		// Scrubbed before it is shortened, not after: slicing first can cut a
+		// `//user:pass@` in half, and then there is no userinfo left to recognise
+		// when the text is printed.
+		return { ok: false, error: scrubCredentials(String(e?.message ?? e)).slice(0, 120) };
 	}
 }
 
@@ -53,20 +56,26 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 	const registryReadable = toolsResult.ok && commandsResult.ok;
 
 	// --- attribution -------------------------------------------------------
+	// Only entries that carry a name: a nameless one still counted towards an
+	// owner's total, so the row said "(3)" and then listed two names.
+	const named = (list) => list.filter((item) => typeof item?.name === "string" && item.name);
 	const toolsByOwner = new Map();
-	for (const tool of tools) {
-		const owner = ownerOf(tool?.sourceInfo?.path);
+	for (const tool of named(tools)) {
+		const owner = ownerOf(tool.sourceInfo?.path);
 		if (!toolsByOwner.has(owner)) toolsByOwner.set(owner, []);
 		toolsByOwner.get(owner).push(tool.name);
 	}
 	const commandsByOwner = new Map();
-	for (const command of commands) {
-		const owner = ownerOf(command?.sourceInfo?.path);
+	for (const command of named(commands)) {
+		const owner = ownerOf(command.sourceInfo?.path);
 		if (!commandsByOwner.has(owner)) commandsByOwner.set(owner, []);
 		commandsByOwner.get(owner).push(command.name);
 	}
+	const toolsNamed = [...toolsByOwner.values()].reduce((n, list) => n + list.length, 0);
 
-	const builtinTools = tools.filter((t) => (t?.sourceInfo?.path ?? "").startsWith("builtin:")).length;
+	// `sourceInfo.path` is a third-party field: a number here threw out of run()
+	// and replaced the whole Registry group with one crash row.
+	const builtinTools = tools.filter((t) => typeof t?.sourceInfo?.path === "string" && t.sourceInfo.path.startsWith("builtin:")).length;
 	results.push(
 		toolsResult.ok
 			? {
@@ -120,21 +129,19 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 	const attribution = [...toolsByOwner]
 		.sort((a, b) => b[1].length - a[1].length)
 		.slice(0, 12)
-		.map(([owner, names]) => `${owner}: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ` +${names.length - 6}` : ""}`)
+		.map(([owner, names]) => `${owner}: ${truncateList(names, 6)}`)
 		.join("; ");
 	if (registryReadable && attribution) {
 		// The owners themselves belong in the default view: "12 sources own 40
 		// tools" answers nothing a user asked, while naming them is the whole point
 		// of an attribution row. The per-owner tool names stay behind --verbose.
 		const ranked = [...toolsByOwner].sort((a, b) => b[1].length - a[1].length).map(([owner, names]) => `${owner} (${names.length})`);
-		const head = ranked.slice(0, 4).join(", ");
-		const more = ranked.length > 4 ? ` +${ranked.length - 4} more` : "";
 		results.push({
 			group,
 			id: "attribution",
 			title: "attribution",
 			status: "ok",
-			detail: `${tools.length} tool(s) from ${toolsByOwner.size} source(s): ${head}${more}`,
+			detail: `${toolsNamed} tool(s) from ${toolsByOwner.size} source(s): ${truncateList(ranked, 4)}`,
 			hint: `Run with --verbose for the tool names. ${attribution}`,
 		});
 	}
@@ -254,7 +261,7 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					status: "warn",
 					// Already redacted where the label was built, with the scheme still
 					// attached; re-redacting a bare name would erase it.
-					detail: `${silent.join(", ")} declared an extension but registered no tool or command`,
+					detail: `${truncateList(silent, 6)} declared an extension but registered no tool or command`,
 					hint: "May be event-only by design, or may have failed to load. Restart `pi --verbose` to see extension load errors.",
 				}
 			: { group, id: "silent", title: "silent packages", status: "ok", detail: "none" },

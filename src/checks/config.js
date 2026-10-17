@@ -2,7 +2,7 @@
 // entries that silently cancel each other out?
 import fs from "node:fs";
 import path from "node:path";
-import { exists, isMissing, makeRow, newestBackup, readJson, redactSource, sourceOf } from "../util.js";
+import { exists, isMissing, makeRow, newestBackup, readJson, redactSource, sourceOf, truncateList } from "../util.js";
 
 export const group = "Config";
 
@@ -282,7 +282,7 @@ export async function run({
 		} else {
 			results.push(
 				missing.size
-					? row("env", "env references", "warn", `referenced but unset: ${[...missing].join(", ")}`, {
+					? row("env", "env references", "warn", `referenced but unset: ${truncateList(missing, 6)}`, {
 							hint: "Export them before starting Pi, or the provider that needs them will fail at request time.",
 						})
 					: row("env", "env references", "ok", `${references} reference(s) all set`),

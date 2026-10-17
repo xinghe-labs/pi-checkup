@@ -8,6 +8,7 @@ import path from "node:path";
 
 import {
 	bareHost,
+	describeFsError,
 	globExists,
 	humanBytes,
 	isLoopbackHost,
@@ -24,6 +25,7 @@ import {
 	sameCommand,
 	scrubCredentials,
 	sourceOf,
+	truncateList,
 	whichAll,
 } from "../src/util.js";
 import { renderReport, renderVerdict, summarize, toJson } from "../src/render.js";
@@ -373,6 +375,17 @@ test("redactSource keeps a glob and a scoped path", () => {
 	assert.equal(redactSource("sk-live-pasted"), "(unparsable value)");
 });
 
+test("describeFsError turns an errno into words", () => {
+	// Node's own message carries the errno, the syscall and the absolute path, and
+	// it used to be the text of the "unreadable manifest" row.
+	const err = (code) => Object.assign(new Error(`raw ${code} text`), { code });
+	assert.equal(describeFsError(err("EACCES")), "permission denied");
+	assert.equal(describeFsError(err("EISDIR")), "it is a directory, not a file");
+	assert.equal(describeFsError(err("ENOSPC")), "no space left on the device");
+	assert.equal(describeFsError(err("EWHAT")), "could not be read (EWHAT)");
+	assert.doesNotMatch(describeFsError(err("EACCES")), /raw|text|\//);
+});
+
 test("ownerOf survives a registry entry that is not a path", () => {
 	// `sourceInfo.path` comes from a third-party extension: a number there used to
 	// throw out of the Registry group and collapse it into one crash row.
@@ -407,6 +420,34 @@ test("redactSource keeps a local path and hides a pasted token", () => {
 	assert.equal(redactSource("git:https://ghp_sekrit@github.com/me/x"), "git:https://***@github.com/me/x");
 	assert.equal(redactSource("sk-ant-api03-AbC123"), "(unparsable value)");
 	assert.equal(redactSource("sk-ant-api03-AbC123?x=1"), "(unparsable value)");
+});
+
+test("redactSource hides userinfo even when the source has no slashes", () => {
+	// `alice:pw@host/v1` starts with `word:` and used to be taken for a scheme, so
+	// scrubCredentials — which only matched the `//user:pass@` form — handed the
+	// password back to the report.
+	for (const value of ["alice:pw@host/v1", "npm:alice:pw@host/v1", "https:/alice:pw@host", "alice:s3cr3t"]) {
+		const out = redactSource(value);
+		assert.doesNotMatch(out, /pw|s3cr3t/, value);
+	}
+	// A package spec is not userinfo: `npm:pi-lens@0.9.1` has an "@" after a ":".
+	assert.equal(redactSource("npm:pi-lens@0.9.1"), "npm:pi-lens@0.9.1");
+	assert.equal(scrubCredentials("npm:stale@0.9.1"), "npm:stale@0.9.1");
+	// scp-style git sources have a user but no password, and hiding them made a
+	// real entry unreadable.
+	assert.equal(redactSource("git@github.com:me/x"), "git@github.com:me/x");
+});
+
+test("truncateList says how much it left out", () => {
+	assert.equal(truncateList(["a", "b"], 3), "a, b");
+	assert.equal(truncateList(["a", "b", "c", "d"], 2), "a, b, ... 2 more");
+	assert.equal(truncateList([], 2), "");
+});
+
+test("ownerOf names an owner for a path that ends at node_modules", () => {
+	// The empty segment used to come back as "", and the attribution row rendered
+	// as " (3)" — a count with no owner next to it.
+	assert.equal(ownerOf("/home/u/.pi/agent/npm/node_modules/"), "unknown");
 });
 
 test("curl never carries the URL, proxy or headers on its command line", () => {

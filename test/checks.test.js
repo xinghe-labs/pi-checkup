@@ -435,6 +435,19 @@ test("registry: a package owned by a nested path still counts as loaded", async 
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("runtime: an agent dir that is a file cannot be opened", async () => {
+	// `exists()` is `access(F_OK)`: a regular file passed it, so a typo in
+	// PI_CODING_AGENT_DIR produced no agent-dir row at all while every other
+	// check read from a path that is not a directory.
+	const root = tmpRoot();
+	const file = path.join(root, "not-a-dir");
+	fs.writeFileSync(file, "");
+	const rows = byId(await runtime.run(buildContext({ agentDir: file, env: {} })));
+	assert.equal(rows["agent-dir"].status, "warn");
+	assert.match(rows["agent-dir"].detail, /could not be opened/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("runtime: a missing agent directory is a warning, not a clean sweep", async () => {
 	// Every check skips when there is no install to inspect, and a report of
 	// "2 ok, 12 skipped" with a green verdict reads as a healthy install.
@@ -1120,6 +1133,10 @@ test("packages: a manifest that cannot be read is unproven, not broken", async (
 	assert.equal(rows["manifests-unreadable"].status, "warn");
 	assert.equal(rows.manifests.status, "skip");
 	assert.doesNotMatch(rows["manifests-unreadable"].detail, /Reinstall/);
+	// In words, not in errno: the row that explains a problem should not be the
+	// least readable line in the report.
+	assert.match(rows["manifests-unreadable"].detail, /it is a directory, not a file/);
+	assert.doesNotMatch(rows["manifests-unreadable"].detail, /EISDIR|illegal operation/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -1458,7 +1475,24 @@ test("network: a rejected header value is not quoted back", async () => {
 	const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
 	assert.equal(rows.providers.status, "skip");
 	assert.doesNotMatch(rows.providers.detail, /sk-live-bad/);
-	assert.match(rows.providers.detail, /could not be built/);
+	assert.match(rows.providers.detail, /not a valid HTTP header value/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: a header value outside Latin-1 is refused, not blamed on the endpoint", async () => {
+	// undici answers this one with "fetch failed" and a ByteString TypeError on
+	// `cause`, so the classifier never saw a header problem and the endpoint was
+	// reported unreachable. It also has to be refused before curl runs: curl
+	// sends the UTF-8 bytes, and a 401 for a mutated key says nothing.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { gw: { baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-live-k€y" } },
+	});
+	const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
+	assert.equal(rows.providers.status, "skip");
+	assert.doesNotMatch(rows.providers.detail, /sk-live|k€y|unreachable/);
+	assert.match(rows.providers.detail, /not a valid HTTP header value/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -1477,6 +1511,86 @@ test("registry: an error that quotes a token is scrubbed before it is printed", 
 	assert.equal(rows.tools.status, "warn");
 	assert.doesNotMatch(JSON.stringify(rows), /ghp_sekrit/);
 	assert.match(rows.tools.detail, /could not read the tool registry/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: a numeric sourceInfo.path does not take the group down", async () => {
+	// `(path ?? "").startsWith` threw on a number, and one bad registry entry
+	// replaced every Registry row with a single crash line.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const pi = {
+		getSettings: () => ({ packages: [] }),
+		getAllTools: () => [
+			{ name: "bad", sourceInfo: { path: 42 } },
+			{ name: "good", sourceInfo: { path: path.join(root, "npm", "node_modules", "pi-lens", "dist", "index.js") } },
+		],
+		getCommands: () => [],
+		getMcpServers: () => [],
+	};
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
+	assert.equal(rows.tools.status, "ok");
+	assert.match(rows.attribution.detail, /pi-lens \(1\)/);
+	assert.match(rows.attribution.detail, /unknown \(1\)/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: a nameless entry is not counted as an owner's tool", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const pkgPath = path.join(root, "npm", "node_modules", "pi-lens", "dist", "index.js");
+	const pi = {
+		getSettings: () => ({ packages: [] }),
+		getAllTools: () => [{ sourceInfo: { path: pkgPath } }, { name: "named", sourceInfo: { path: pkgPath } }],
+		getCommands: () => [],
+		getMcpServers: () => [],
+	};
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
+	// "(2)" would promise two names and print one.
+	assert.match(rows.attribution.detail, /pi-lens \(1\)/);
+	assert.match(rows.attribution.detail, /1 tool\(s\)/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: an error is scrubbed before it is shortened", async () => {
+	// Slicing first can cut `//user:pass@` in half, and then there is no userinfo
+	// left for scrubCredentials to recognise.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const pi = {
+		getSettings: () => ({ packages: [] }),
+		getAllTools: () => {
+			throw new Error(`${"x".repeat(130)} https://alice:sekrit@host/v1`);
+		},
+		getCommands: () => [],
+		getMcpServers: () => [],
+	};
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
+	assert.equal(rows.tools.status, "warn");
+	assert.doesNotMatch(JSON.stringify(rows), /alice:sekrit/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: the attribution row counts the owners it did not name", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const tools = [];
+	for (const name of ["a", "b", "c", "d", "e", "f"]) {
+		tools.push({ name, sourceInfo: { path: path.join(root, "npm", "node_modules", `pkg-${name}`, "index.js") } });
+	}
+	const pi = { getSettings: () => ({ packages: [] }), getAllTools: () => tools, getCommands: () => [], getMcpServers: () => [] };
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
+	assert.match(rows.attribution.detail, /\.\.\. 2 more/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: an empty list from the session is not blamed on a missing file", async () => {
+	const root = tmpRoot();
+	const pi = { getSettings: () => ({ packages: [] }), getAllTools: () => [], getCommands: () => [], getMcpServers: () => [] };
+	const rows = byId(await packages.run(buildContext({ agentDir: root, pi })));
+	assert.equal(rows.installed.status, "skip");
+	assert.match(rows.installed.detail, /no packages in the running session/);
+	assert.doesNotMatch(rows.installed.detail, /not found/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
