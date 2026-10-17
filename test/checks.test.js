@@ -305,6 +305,36 @@ test("registry: a package owned by a nested path still counts as loaded", async 
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("registry: a package declaring an empty extensions list is not silent", async () => {
+	const root = tmpRoot();
+	const dir = installPkg(root, "nothing", { pi: { extensions: [] } });
+	const settings = { packages: ["npm:nothing"] };
+
+	const ctx = buildContext({ agentDir: root, pi: fakePi(settings, []) });
+	const rows = byId(await registry.run(ctx));
+	assert.equal(rows.silent.status, "ok", rows.silent.detail);
+	assert.ok(dir);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: a source path differing only in case is still the same package", { skip: process.platform === "linux" ? "case-sensitive filesystem" : false }, async () => {
+	const root = tmpRoot();
+	const extDir = path.join(root, "extensions", "Case-Ext");
+	writeJson(path.join(extDir, "package.json"), { name: "case-ext", pi: { extensions: ["./index.js"] } });
+	fs.writeFileSync(path.join(extDir, "index.js"), "");
+	const settings = { packages: ["./extensions/Case-Ext"] };
+
+	// Windows and macOS report the path with a different case than the one the
+	// user typed; that must not read as "registered nothing".
+	const ctx = buildContext({
+		agentDir: root,
+		pi: fakePi(settings, [{ name: "t", sourceInfo: { path: path.join(root, "extensions", "case-ext", "index.js") } }]),
+	});
+	const rows = byId(await registry.run(ctx));
+	assert.equal(rows.silent.status, "ok", rows.silent.detail);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 // --- crash isolation -----------------------------------------------------
 
 test("runChecks turns a crashed module into a failure, not a warning", async () => {

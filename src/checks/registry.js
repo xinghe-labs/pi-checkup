@@ -4,15 +4,21 @@
 // are installed, but only the running session knows which tools and commands
 // they really registered, under what names, and who lost a collision.
 import path from "node:path";
-import { ownerOf, readJson, resolvePackageDir } from "../util.js";
+import { normalizePath, ownerOf, readJson, resolvePackageDir, sourceOf } from "../util.js";
 
 export const group = "Registry";
 
-function call(fn, fallback) {
+/**
+ * Call into the Pi API, keeping "it threw" distinguishable from "it returned
+ * nothing". Swallowing the error produced a green "0 registered across 0
+ * sources" over a registry that was never read.
+ */
+function call(fn) {
 	try {
-		return fn() ?? fallback;
-	} catch {
-		return fallback;
+		const value = fn();
+		return Array.isArray(value) ? { ok: true, value } : { ok: true, value: [] };
+	} catch (e) {
+		return { ok: false, error: String(e?.message ?? e).slice(0, 120) };
 	}
 }
 
@@ -34,9 +40,13 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 		];
 	}
 
-	const tools = call(() => pi.getAllTools(), []);
-	const commands = call(() => pi.getCommands(), []);
-	const servers = call(() => pi.getMcpServers(), []);
+	const toolsResult = call(() => pi.getAllTools());
+	const commandsResult = call(() => pi.getCommands());
+	const serversResult = call(() => pi.getMcpServers());
+	const tools = toolsResult.ok ? toolsResult.value : [];
+	const commands = commandsResult.ok ? commandsResult.value : [];
+	const servers = serversResult.ok ? serversResult.value : [];
+	const registryReadable = toolsResult.ok && commandsResult.ok;
 
 	// --- attribution -------------------------------------------------------
 	const toolsByOwner = new Map();
@@ -53,20 +63,60 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 	}
 
 	const builtinTools = tools.filter((t) => (t?.sourceInfo?.path ?? "").startsWith("builtin:")).length;
-	results.push({
-		group,
-		id: "tools",
-		title: "tools",
-		status: "ok",
-		detail: `${tools.length} registered (${tools.length - builtinTools} extension, ${builtinTools} builtin) across ${toolsByOwner.size} sources`,
-	});
-	results.push({
-		group,
-		id: "commands",
-		title: "commands",
-		status: "ok",
-		detail: `${commands.length} registered across ${commandsByOwner.size} sources, ${servers.length} MCP server(s)`,
-	});
+	results.push(
+		toolsResult.ok
+			? {
+					group,
+					id: "tools",
+					title: "tools",
+					status: "ok",
+					detail: `${tools.length} registered (${tools.length - builtinTools} extension, ${builtinTools} builtin) across ${toolsByOwner.size} sources`,
+				}
+			: {
+					group,
+					id: "tools",
+					title: "tools",
+					status: "warn",
+					detail: `could not read the tool registry (${toolsResult.error})`,
+					hint: "The Pi API may have changed, or an extension failed mid-load. Run `pi --verbose`.",
+				},
+	);
+	results.push(
+		commandsResult.ok
+			? {
+					group,
+					id: "commands",
+					title: "commands",
+					status: "ok",
+					detail: `${commands.length} registered across ${commandsByOwner.size} sources, ${servers.length} MCP server(s)`,
+				}
+			: {
+					group,
+					id: "commands",
+					title: "commands",
+					status: "warn",
+					detail: `could not read the command registry (${commandsResult.error})`,
+					hint: "The Pi API may have changed, or an extension failed mid-load. Run `pi --verbose`.",
+				},
+	);
+
+	// Which package owns which names — the answer `pi list` cannot give. Shown
+	// under --verbose, since the summary line above already covers the default view.
+	const attribution = [...toolsByOwner]
+		.sort((a, b) => b[1].length - a[1].length)
+		.slice(0, 12)
+		.map(([owner, names]) => `${owner}: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ` +${names.length - 6}` : ""}`)
+		.join("; ");
+	if (registryReadable && attribution) {
+		results.push({
+			group,
+			id: "attribution",
+			title: "attribution",
+			status: "ok",
+			detail: `${toolsByOwner.size} source(s) own the ${tools.length} registered tool(s)`,
+			hint: `Run with --verbose to see them. ${attribution}`,
+		});
+	}
 
 	// --- collisions --------------------------------------------------------
 	// A collision means one extension silently stops being reachable: the later
@@ -112,6 +162,19 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 		.filter((p) => typeof p === "string" && !p.startsWith("builtin:"))
 		.map(normalizePath);
 
+	// Without a readable registry every declared package looks silent, so the
+	// comparison is only meaningful when both halves loaded.
+	if (!registryReadable) {
+		results.push({
+			group,
+			id: "silent",
+			title: "silent packages",
+			status: "skip",
+			detail: "cannot compare against the registry that failed to load",
+		});
+		return results;
+	}
+
 	const silent = declaredPackages(settings, root)
 		.filter((pkg) => !loadedPaths.some((loaded) => loaded === pkg.dir || loaded.startsWith(`${pkg.dir}/`)))
 		.map((pkg) => pkg.label);
@@ -123,7 +186,7 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					title: "silent packages",
 					status: "warn",
 					detail: `${silent.join(", ")} declared an extension but registered no tool or command`,
-					hint: "May be event-only by design, or may have failed to load. Try /reload with --verbose.",
+					hint: "May be event-only by design, or may have failed to load. Restart `pi --verbose` to see extension load errors.",
 				}
 			: { group, id: "silent", title: "silent packages", status: "ok", detail: "none" },
 	);
@@ -143,10 +206,7 @@ function findDuplicates(items) {
 	return [...byName].filter(([, owners]) => owners.size > 1).map(([name, owners]) => [name, [...owners]]);
 }
 
-/** Absolute, forward-slashed form of a path, for prefix comparisons. */
-function normalizePath(p) {
-	return path.resolve(p).replace(/\\/g, "/");
-}
+const CASE_INSENSITIVE = process.platform === "win32" || process.platform === "darwin";
 
 /**
  * Packages from settings whose manifests declare an extension entry.
@@ -155,15 +215,22 @@ function normalizePath(p) {
  */
 function declaredPackages(settings, root) {
 	const out = [];
-	for (const spec of settings?.packages ?? []) {
-		const source = typeof spec === "string" ? spec : spec?.source;
-		if (typeof source !== "string") continue;
+	// Guard the type: a hand-edited string here would be walked character by
+	// character, and every character is itself a string.
+	const specs = Array.isArray(settings?.packages) ? settings.packages : [];
+	for (const spec of specs) {
+		const source = sourceOf(spec);
+		if (!source) continue;
 		const dir = resolvePackageDir(source, root);
 		// git:/https:/bare sources are resolved by Pi itself; the Packages group
 		// already reports those as unverifiable rather than guessing here.
 		if (!dir) continue;
 		const manifest = readJson(path.join(dir, "package.json"));
-		if (!manifest.ok || !manifest.data?.pi?.extensions) continue;
+		if (!manifest.ok) continue;
+		// An empty list declares no extension, so loading nothing is correct.
+		const declared = manifest.data?.pi?.extensions;
+		const count = Array.isArray(declared) ? declared.length : declared ? 1 : 0;
+		if (!count) continue;
 		out.push({ label: source.replace(/^npm:/, ""), dir: normalizePath(dir) });
 	}
 	return out;

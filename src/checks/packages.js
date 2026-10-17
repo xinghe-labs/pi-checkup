@@ -7,11 +7,11 @@
 // never committed.
 import path from "node:path";
 import fs from "node:fs";
-import { globExists, readJson, resolvePackageDir } from "../util.js";
+import { globExists, readJson, resolvePackageDir, sourceOf } from "../util.js";
 
 export const group = "Packages";
 
-export async function run({ settings, agentDir: root, settingsFile }) {
+export async function run({ settings, agentDir: root, settingsFile, settingsSource }) {
 	const results = [];
 
 	// A hand-edited settings.json can put a string here, and iterating that would
@@ -31,6 +31,7 @@ export async function run({ settings, agentDir: root, settingsFile }) {
 	}
 
 	const missingDir = [];
+	const unreadableDir = [];
 	const brokenManifest = [];
 	const missingEntry = [];
 	const unverifiable = [];
@@ -41,7 +42,7 @@ export async function run({ settings, agentDir: root, settingsFile }) {
 	let entryChecked = 0;
 
 	for (const spec of specs) {
-		const source = typeof spec === "string" ? spec : spec?.source;
+		const source = sourceOf(spec);
 		const dir = resolvePackageDir(source, root);
 		if (!dir) {
 			unverifiable.push(String(source));
@@ -50,8 +51,14 @@ export async function run({ settings, agentDir: root, settingsFile }) {
 		let stat;
 		try {
 			stat = fs.statSync(dir);
-		} catch {
-			missingDir.push(String(source));
+		} catch (e) {
+			// Only "it is not there" justifies offering to delete the settings entry.
+			// EACCES/EPERM/ELOOP mean the package may be perfectly fine and this
+			// process simply cannot see it; treating those as missing turned a
+			// permission problem into a destructive repair.
+			const code = e?.code;
+			if (code === "ENOENT" || code === "ENOTDIR") missingDir.push(String(source));
+			else unreadableDir.push(`${source} (${code ?? "error"})`);
 			continue;
 		}
 		if (!stat.isDirectory()) {
@@ -79,21 +86,37 @@ export async function run({ settings, agentDir: root, settingsFile }) {
 	const row = (id, title, status, detail, extra = {}) => ({ group, id, title, status, detail, ...extra });
 
 	// --- package directories -----------------------------------------------
+	// The prune repair is only safe when settings came from the file the repair
+	// would rewrite. In-session the settings may come from the running process, so
+	// editing the on-disk copy could either miss the problem or hit a stale file.
+	const canPrune = Boolean(settingsFile) && settingsSource !== "runtime";
 	if (missingDir.length) {
 		results.push(
 			row("dirs", "package dirs", "fail", `${missingDir.length} missing from node_modules: ${preview(missingDir, 3)}`, {
 				hint: "Run `pi install` again for the listed packages, or remove them from settings.json.",
 				// Dropping the entry is the only repair a static checker can offer;
 				// reinstalling needs the package manager and the network.
-				fix: settingsFile ? "prune-missing-packages" : undefined,
-				fixTarget: settingsFile || undefined,
+				fix: canPrune ? "prune-missing-packages" : undefined,
+				fixTarget: canPrune ? settingsFile : undefined,
 			}),
 		);
 	} else if (present) {
 		results.push(row("dirs", "package dirs", "ok", `${present} present`));
+	} else if (unreadableDir.length) {
+		results.push(row("dirs", "package dirs", "skip", "no package directory could be opened"));
 	} else {
 		// Every entry was resolved by Pi itself, so no directory was ever opened.
 		results.push(row("dirs", "package dirs", "skip", "no package directory could be inspected"));
+	}
+
+	// Reported separately and deliberately without a `fix`: the package is
+	// probably fine, so deleting its settings entry would be the wrong repair.
+	if (unreadableDir.length) {
+		results.push(
+			row("unreadable", "unreadable dirs", "warn", `${unreadableDir.length} package dir(s) could not be opened: ${preview(unreadableDir, 3)}`, {
+				hint: "A permissions or filesystem problem, not a missing package. Check ownership of the agent directory.",
+			}),
+		);
 	}
 
 	// --- manifests ---------------------------------------------------------
@@ -103,7 +126,7 @@ export async function run({ settings, agentDir: root, settingsFile }) {
 				"manifests",
 				"manifests",
 				"fail",
-				`${brokenManifest.length} unreadable package.json: ${brokenManifest.slice(0, 3).join(", ")}`,
+				`${brokenManifest.length} unreadable package.json: ${preview(brokenManifest, 3)}`,
 				{ hint: "Reinstall the affected packages." },
 			),
 		);
@@ -121,7 +144,7 @@ export async function run({ settings, agentDir: root, settingsFile }) {
 				"entries",
 				"entry files",
 				"fail",
-				`${missingEntry.length} manifest(s) point at files that do not exist: ${missingEntry.slice(0, 2).join("; ")}`,
+				`${missingEntry.length} manifest(s) point at files that do not exist: ${preview(missingEntry, 2)}`,
 				{ hint: "The package is installed but cannot load. Reinstall it, or check whether it needs a build step." },
 			),
 		);
@@ -137,7 +160,7 @@ export async function run({ settings, agentDir: root, settingsFile }) {
 				"unverifiable",
 				"unverifiable",
 				"skip",
-				`${unverifiable.length} source(s) resolved by Pi itself, not inspectable statically: ${unverifiable.slice(0, 3).join(", ")}`,
+				`${unverifiable.length} source(s) resolved by Pi itself, not inspectable statically: ${preview(unverifiable, 3)}`,
 			),
 		);
 	}

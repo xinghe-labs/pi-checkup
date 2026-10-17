@@ -7,15 +7,36 @@
 //      PATH, so the name resolves to something else entirely.
 import path from "node:path";
 import fs from "node:fs";
-import { exists, readJson, resolvePackageDir, whichAll, isWindows } from "../util.js";
+import { exists, isMissing, normalizePath, readJson, resolvePackageDir, sourceOf, whichAll } from "../util.js";
 
 export const group = "Binaries";
+
+function danglingRow(dangling, entryCount) {
+	if (dangling.length) {
+		return {
+			group,
+			id: "dangling",
+			title: "dangling links",
+			status: "fail",
+			detail: `${dangling.length} broken: ${dangling.slice(0, 6).join(", ")}`,
+			hint: "Usually a blocked postinstall or a skipped optional native dependency. Reinstall the owning package with install scripts approved.",
+		};
+	}
+	// Nothing to inspect is not a pass: an empty .bin used to print a green tick
+	// over zero entries.
+	if (!entryCount) {
+		return { group, id: "dangling", title: "dangling links", status: "skip", detail: "no entries in .bin to check" };
+	}
+	return { group, id: "dangling", title: "dangling links", status: "ok", detail: `${entryCount} entries all resolve` };
+}
 
 /** bin names that installed packages declare in their own manifests. */
 function declaredBins(settings, root) {
 	const names = new Set();
 	for (const spec of settings?.packages ?? []) {
-		const dir = resolvePackageDir(spec, root);
+		const source = sourceOf(spec);
+		if (!source) continue;
+		const dir = resolvePackageDir(source, root);
 		if (!dir) continue;
 		const manifest = readJson(path.join(dir, "package.json"));
 		if (!manifest.ok) continue;
@@ -34,13 +55,15 @@ function declaredBins(settings, root) {
 export async function run({ settings, agentDir: root }) {
 	const binDir = path.join(root, "npm", "node_modules", ".bin");
 	if (!exists(binDir)) {
+		// An unreadable .bin is not an empty one. Saying "no npm packages
+		// installed" for an EACCES sends the user looking in the wrong place.
 		return [
 			{
 				group,
 				id: "bin-dir",
 				title: "bin dir",
-				status: "skip",
-				detail: `${binDir} does not exist (no npm packages installed)`,
+				status: isMissing(binDir) ? "skip" : "warn",
+				detail: isMissing(binDir) ? `${binDir} does not exist (no npm packages installed)` : `cannot read ${binDir}`,
 			},
 		];
 	}
@@ -73,42 +96,44 @@ export async function run({ settings, agentDir: root }) {
 		if (isLink && !exists(full)) dangling.push(entry);
 	}
 
-	const results = [
-		dangling.length
-			? {
-					group,
-					id: "dangling",
-					title: "dangling links",
-					status: "fail",
-					detail: `${dangling.length} broken: ${dangling.slice(0, 6).join(", ")}`,
-					hint: "Usually a blocked postinstall or a skipped optional native dependency. Reinstall the owning package with install scripts approved.",
-				}
-			: {
-					group,
-					id: "dangling",
-					title: "dangling links",
-					status: "ok",
-					detail: `${entries.length} entries all resolve`,
-				},
-	];
+	const results = [danglingRow(dangling, entries.length)];
+
+	// --- declared but never linked -----------------------------------------
+	// A package can declare a `bin` and still have no shim, because npm skips
+	// linking when install scripts are blocked. Driven off the manifests, not off
+	// .bin, so a command that was never installed is not silently ignored.
+	const ownBins = declaredBins(settings, root);
+	const entryNames = new Set(entries.map((e) => e.replace(/\.(cmd|ps1|exe|bat)$/i, "")));
+	const missingShims = [...ownBins].filter((name) => !entryNames.has(name)).sort();
+	if (missingShims.length) {
+		results.push({
+			group,
+			id: "missing-shims",
+			title: "missing shims",
+			status: "warn",
+			detail: `${missingShims.length} declared command(s) never linked into .bin: ${missingShims.slice(0, 6).join(", ")}`,
+			hint: "npm creates these links during install. Reinstall the owning package without --ignore-scripts.",
+		});
+	}
 
 	// --- shadowing and reachability ----------------------------------------
-	const ownBins = declaredBins(settings, root);
 	const shadowed = [];
 	const unreachable = [];
-	const norm = (p) => (isWindows ? normalizeWin(p) : p);
 
-	for (const entry of entries) {
+	for (const entry of ownBins) {
 		// Both findings below are about commands a Pi package advertises. A
 		// transitive dev dependency that happens to be shadowed is not the user's
 		// problem and reporting it made a healthy install look broken forever.
-		if (!ownBins.has(entry)) continue;
-		const hits = await whichAll(entry);
+		const hits = whichAll(entry);
 		if (!hits.length) {
-			unreachable.push(entry);
+			// A missing shim is already reported above with a better hint; listing it
+			// here too would double-count the same root cause.
+			if (!missingShims.includes(entry)) unreachable.push(entry);
 			continue;
 		}
-		if (norm(hits[0]) !== norm(path.join(binDir, entry))) shadowed.push({ name: entry, actual: hits[0] });
+		// realpath on both sides: a symlinked ~/.pi (or /var on macOS) is the same
+		// file, and comparing raw strings called every package bin shadowed.
+		if (normalizePath(hits[0]) !== normalizePath(path.join(binDir, entry))) shadowed.push({ name: entry, actual: hits[0] });
 	}
 
 	const shownShadow = shadowed
@@ -142,8 +167,4 @@ export async function run({ settings, agentDir: root }) {
 	}
 
 	return results;
-}
-
-function normalizeWin(p) {
-	return String(p).replace(/\\/g, "/").toLowerCase();
 }
