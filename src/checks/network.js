@@ -48,7 +48,6 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 	}
 
 	const providers = models.data?.providers ?? models.data ?? {};
-	const entries = Object.entries(providers).filter(([, p]) => p && typeof p === "object");
 
 	// Worked out before the offline branch: whether a key would cross the network
 	// in the clear is a property of the config, not of the probe. Skipping it in
@@ -56,21 +55,27 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 	// user is most likely to run.
 	const cleartext = [];
 	const planned = [];
-	// A provider whose baseUrl is not a string used to be dropped in silence, and
-	// the report then claimed there was "no provider with a baseUrl in models.json"
-	// — a statement about the config that the check had just disproved.
-	const badBaseUrl = [];
+	// Anything dropped for its shape is named here. Dropping silently made the
+	// report claim "no provider with a baseUrl" about a config it had just
+	// disproved — and a provider whose value is not even an object was the same
+	// hole one level up.
+	const shape = [];
+	const queryWithheld = [];
 	const proxy = proxyFromEnv(env);
-	for (const [name, provider] of entries) {
+	for (const [name, provider] of Object.entries(providers)) {
+		if (!provider || typeof provider !== "object" || Array.isArray(provider)) {
+			shape.push(`${name} (${provider === null ? "null" : Array.isArray(provider) ? "array" : typeof provider}) is not a provider object`);
+			continue;
+		}
 		const baseUrl = provider.baseUrl ?? provider.base_url;
 		if (baseUrl === undefined || baseUrl === null || baseUrl === "") continue;
 		if (typeof baseUrl !== "string") {
-			badBaseUrl.push(`${name} (${Array.isArray(baseUrl) ? "array" : typeof baseUrl})`);
+			shape.push(`${name} (${Array.isArray(baseUrl) ? "array" : typeof baseUrl}) — baseUrl is not a string`);
 			continue;
 		}
 		let url;
 		try {
-			url = new URL(baseUrl.replace(/\/+$/, "") + "/models");
+			url = new URL(baseUrl);
 		} catch {
 			// Redacted: the usual cause is a hand-pasted baseUrl, and a pasted URL
 			// is the one that still has `?key=…` on it.
@@ -85,6 +90,11 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			planned.push({ name, invalid: redactUrl(baseUrl) });
 			continue;
 		}
+		// Appended to the pathname, not to the raw string: `…/v1?api-version=2024`
+		// used to become `…/v1?api-version=2024/models`, so the probe asked a
+		// different question than the config posed and a 404 was reported as a
+		// broken provider.
+		url.pathname = url.pathname.replace(/\/+$/, "") + "/models";
 		// A gateway configured as https://user:pass@host/v1 cannot be fetched at
 		// all: fetch() refuses a URL that carries credentials, so the probe failed
 		// with an error that quoted the password back. Moving them into a header
@@ -113,12 +123,25 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 		// One rule for every credential shape: over plain http to a host that is
 		// not this machine, nothing is sent. Testing reachability is not worth
 		// putting a live secret on the wire in the clear. The apiKey branch had
-		// this guard from the start; userinfo went out as a Basic header.
-		const cleartextAuth = (hasKey || userinfo) && url.protocol === "http:" && !loopback;
+		// this guard from the start; userinfo went out as a Basic header, and
+		// `?key=…` gateways went out as part of the URL.
+		const hasQuery = url.search.length > 1;
+		const cleartextAuth = (hasKey || userinfo || hasQuery) && url.protocol === "http:" && !loopback;
 		if (cleartextAuth) cleartext.push(name);
+		// A query string cannot be inspected for secrets, so it is not sent at all
+		// on a cleartext endpoint: dropping only the parts that look like keys
+		// would be guessing. The endpoint is left unprobed rather than probed with
+		// a different URL, because a 404 for the stripped request is not a fact
+		// about the configured endpoint.
+		const withheld = cleartextAuth && hasQuery;
+		if (withheld) {
+			url.search = "";
+			queryWithheld.push(name);
+		}
 		planned.push({
 			name,
 			url,
+			withheld,
 			key: hasKey && !cleartextAuth ? key : null,
 			// An explicit apiKey wins over userinfo; a URL carrying both is a user
 			// mid-migration, not a configuration to guess about.
@@ -133,20 +156,20 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 				id: "cleartext",
 				title: "cleartext auth",
 				status: "warn",
-				detail: `${cleartext.join(", ")} use http:// with credentials configured`,
+				detail: `${cleartext.join(", ")} use http:// with credentials configured${queryWithheld.length ? ` (query string on ${queryWithheld.join(", ")} withheld)` : ""}`,
 				hint: "Switch the baseUrl to https://, or use a host on localhost. The probe was sent without the credential, which is also why a 401 here is not a broken endpoint.",
 			}
 		: null;
 
 	// Built once so offline mode can emit it too: whether a baseUrl is even a
 	// string is a property of the config, not of the probe.
-	const shapeRow = badBaseUrl.length
+	const shapeRow = shape.length
 		? {
 				group,
 				id: "baseUrl-shape",
 				title: "baseUrl shape",
 				status: "warn",
-				detail: `${badBaseUrl.join(", ")} — baseUrl is not a string, so the endpoint was not probed`,
+				detail: `${shape.join("; ")} — not probed`,
 				hint: "baseUrl has to be a quoted string like \"https://api.example.com/v1\".",
 			}
 		: null;
@@ -158,8 +181,8 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 				id: "providers",
 				title: "providers",
 				status: "skip",
-				detail: badBaseUrl.length
-					? `offline mode — ${planned.length} endpoint(s) not probed; ${badBaseUrl.join(", ")} — baseUrl is not a string`
+				detail: shape.length
+					? `offline mode — ${planned.length} endpoint(s) not probed; ${shape.join("; ")}`
 					: `offline mode — ${planned.length} configured endpoint(s) not probed`,
 				hint: "Re-run without --offline to test reachability.",
 			},
@@ -181,9 +204,19 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			probes.push(Promise.resolve({ name: item.name, status: "fail", detail: `${item.name}: invalid baseUrl ${item.invalid}` }));
 			continue;
 		}
-		const { name, url, key, userinfo, userinfoError } = item;
+		const { name, url, key, userinfo, userinfoError, withheld } = item;
 		const host = bareHost(url.hostname);
 		hosts.set(host, name);
+		if (withheld) {
+			probes.push(
+				Promise.resolve({
+					name,
+					status: "skip",
+					detail: `${name}: not probed — a query string would have crossed the network in the clear`,
+				}),
+			);
+			continue;
+		}
 		if (userinfoError) {
 			probes.push(Promise.resolve({ name, status: "warn", detail: userinfoError }));
 			continue;
@@ -205,8 +238,8 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			id: "providers",
 			title: "providers",
 			status: "skip",
-			detail: badBaseUrl.length
-				? `no provider with a usable baseUrl — ${badBaseUrl.join(", ")} is not a string`
+			detail: shape.length
+				? `no provider with a usable baseUrl — ${shape.join("; ")}`
 				: "no provider with a baseUrl in models.json",
 		});
 	} else if (!unhealthy.length && unprobed.length) {

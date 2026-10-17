@@ -259,10 +259,16 @@ test("packages: an entry that is not a package source is reported as such", asyn
 	// null", which describes nothing the user can act on.
 	const root = tmpRoot();
 	installPkg(root, "ok", { pi: { extensions: ["./i.js"] } }, ["i.js"]);
-	writeJson(path.join(root, "settings.json"), { packages: [null, 42, "npm:ok"] });
+	writeJson(path.join(root, "settings.json"), {
+		packages: [null, 42, "npm:ok", { token: "ghp_do_not_echo_me" }],
+	});
 	const rows = byId(await packages.run(buildContext({ agentDir: root })));
 	assert.equal(rows["entries-shape"].status, "warn");
-	assert.match(rows["entries-shape"].detail, /null, 42/);
+	assert.match(rows["entries-shape"].detail, /null, number 42/);
+	// The entry is described by shape, not by value: an object entry can carry a
+	// token, and printing it put the secret in the report and in `--json`.
+	assert.match(rows["entries-shape"].detail, /an object with keys token/);
+	assert.doesNotMatch(rows["entries-shape"].detail, /ghp_do_not_echo_me/);
 	assert.equal(rows.unverifiable, undefined);
 	fs.rmSync(root, { recursive: true, force: true });
 });
@@ -1120,5 +1126,95 @@ test("registry: pi.extensions null declares no extension", async () => {
 	installPkg(root, "nul", { pi: { extensions: null } });
 	const rows = byId(await registry.run(buildContext({ agentDir: root, pi: fakePi({ packages: ["npm:nul"] }, []) })));
 	assert.equal(rows.silent.status, "skip");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: an empty registry is not a collision-free pass", async () => {
+	// "none" over zero compared objects is the same vacuous green tick the tools
+	// and commands rows were changed to skip for.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi: fakePi({ packages: [] }, []) })));
+	assert.equal(rows["tool-collisions"].status, "skip");
+	assert.equal(rows["command-collisions"].status, "skip");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: /models is appended to the path, not to a query string", async () => {
+	// `…/v1?api-version=2024` used to become `…/v1?api-version=2024/models`, so the
+	// probe asked a different question than the config posed.
+	const http = await import("node:http");
+	const seen = [];
+	const server = http.createServer((req, res) => {
+		seen.push(req.url);
+		res.writeHead(401);
+		res.end();
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const { port } = server.address();
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { az: { baseUrl: `http://127.0.0.1:${port}/v1?api-version=2024` } },
+	});
+	try {
+		await network.run(buildContext({ agentDir: root, env: {} }));
+	} finally {
+		server.close();
+	}
+	assert.deepEqual(seen, ["/v1/models?api-version=2024"]);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: a query string on a cleartext endpoint is neither sent nor printed", async () => {
+	// `?key=…` gateways are a real shape. A query string cannot be inspected for
+	// secrets, so on plain http to another machine it is withheld, and the row
+	// says so instead of probing a URL nobody configured.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { gw: { baseUrl: "http://example.com/v1?key=sk-live-query-secret" } },
+	});
+	const rows = byId(await network.run(buildContext({ agentDir: root, env: {}, offline: true })));
+	assert.equal(rows.cleartext.status, "warn");
+	assert.match(rows.cleartext.detail, /query string on gw withheld/);
+	assert.doesNotMatch(JSON.stringify(rows), /sk-live-query-secret/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: a provider whose value is not an object is named, not dropped", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { str: "http://x/v1", nil: null, arr: ["http://y/v1"] },
+	});
+	const rows = byId(await network.run(buildContext({ agentDir: root, env: {}, offline: true })));
+	assert.equal(rows["baseUrl-shape"].status, "warn");
+	assert.match(rows["baseUrl-shape"].detail, /str \(string\) is not a provider object/);
+	assert.match(rows["baseUrl-shape"].detail, /nil \(null\) is not a provider object/);
+	assert.match(rows["baseUrl-shape"].detail, /arr \(array\) is not a provider object/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: an empty package list is a skip for duplicates, not a pass", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const rows = byId(await config.run(buildContext({ agentDir: root })));
+	assert.equal(rows.duplicates.status, "skip");
+	assert.match(rows.duplicates.detail, /no package entries to compare/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("runtime: a proxy password containing @ still yields a host and port", async () => {
+	// curl accepts `user:p@ss@host:port`; cutting at the first `@` left the row
+	// claiming a working proxy had no usable host and port.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const rows = byId(
+		await runtime.run(buildContext({ agentDir: root, env: { all_proxy: "http://alice:p@ss@127.0.0.1:1" }, offline: true })),
+	);
+	assert.doesNotMatch(rows.proxy.detail, /without a usable host and port/);
+	assert.match(rows.proxy.detail, /127\.0\.0\.1:1/);
+	assert.doesNotMatch(rows.proxy.detail, /p@ss/);
 	fs.rmSync(root, { recursive: true, force: true });
 });

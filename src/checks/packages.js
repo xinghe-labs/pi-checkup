@@ -11,6 +11,22 @@ import { exists, globExists, makeRow, readJson, redactSource, resolvePackageDir,
 
 export const group = "Packages";
 
+/**
+ * Describe a malformed `packages` entry without printing it.
+ *
+ * The entry can be any JSON value, including an object with a `token` field;
+ * `redactSource` scrubs URLs, not arbitrary objects, so serialising the value
+ * put whatever was in it into the report and into `--json`.
+ */
+function describeSpec(spec) {
+	if (spec === null) return "null";
+	if (Array.isArray(spec)) return "an array";
+	const kind = typeof spec;
+	if (kind !== "object") return `${kind} ${JSON.stringify(spec)}`.slice(0, 40);
+	const keys = Object.keys(spec);
+	return keys.length ? `an object with keys ${keys.slice(0, 4).join(", ")}` : "an empty object";
+}
+
 export async function run({ settings, agentDir: root, settingsFile, settingsSource }) {
 	const results = [];
 
@@ -46,7 +62,7 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 				title: "installed",
 				status: malformed || (unreadable && !absent) ? "warn" : "skip",
 				detail,
-				hint: unreadable && !absent ? "The Config group reports the parse error." : undefined,
+				hint: unreadable && !absent ? "The Config group reports why settings.json could not be used." : undefined,
 			},
 		];
 	}
@@ -72,7 +88,9 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 			// A null, a number or an object without `source` is a malformed entry, not
 			// a source "resolved by Pi itself": the old path pushed `null` into the
 			// unverifiable list and printed "2 source(s) ... null, null".
-			badSpecs.push(redactSource(JSON.stringify(spec) ?? String(spec)));
+			// Shape, not content: an entry object can carry a token field, and
+			// redactSource only scrubs URLs, so serialising it echoed the secret.
+			badSpecs.push(describeSpec(spec));
 			continue;
 		}
 		const dir = resolvePackageDir(source, root);
@@ -187,7 +205,7 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 				"manifests",
 				"manifests",
 				"fail",
-				`${brokenManifest.length} unreadable package.json: ${preview(brokenManifest, 3)}`,
+				`${brokenManifest.length} package.json not valid JSON: ${preview(brokenManifest, 3)}`,
 				{
 					// A run that overlaps an install sees a manifest mid-rename. Saying so
 					// is the difference between "reinstall everything" and "wait 30 seconds".

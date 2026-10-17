@@ -255,6 +255,24 @@ test("prune resolves package directories against the root it is given", async ()
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("prune refuses when every entry it can resolve is missing", async () => {
+	// The guard used to compare against the whole list, and prune keeps `git:` and
+	// malformed entries by design — so one missing npm entry next to one git source
+	// made the counts differ and the repair deleted the only thing it could see.
+	const { applyPruneMissingPackages } = await import("../src/repair.js");
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	const packages = ["npm:gone", "git:https://github.com/me/ext", 42];
+	fs.writeFileSync(file, JSON.stringify({ packages }, null, 2));
+
+	const res = applyPruneMissingPackages(file, dir);
+	assert.equal(res.ok, false);
+	assert.match(res.message, /refusing to empty the list/);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).packages, packages);
+	assert.equal(fs.readdirSync(dir).filter((f) => f.includes("checkup-bak")).length, 0);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test("prune keeps an entry it cannot stat for any reason other than absence", async () => {
 	const { applyPruneMissingPackages } = await import("../src/repair.js");
 	const dir = tmp();

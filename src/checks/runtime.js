@@ -177,8 +177,13 @@ async function checkProxy(proxy, env = process.env) {
 		// `proxy.corp:8080` with no scheme is a shape curl accepts and this check
 		// used to warn about — the same env value, judged two different ways.
 		// Userinfo is stripped first: `user:pass@proxy.corp:8080` is a shape curl
-		// also accepts, and the credential is not part of the address.
-		const bare = proxy.trim().replace(/^[^@/]*@/, "");
+		// also accepts, and the credential is not part of the address. The last `@`
+		// is the separator, because a password may contain one — cutting at the
+		// first left `proxy.corp:8080` unparsed and reported a working proxy as
+		// having no usable host.
+		const trimmed = proxy.trim();
+		const at = trimmed.lastIndexOf("@");
+		const bare = at === -1 ? trimmed : trimmed.slice(at + 1);
 		const textual = /^([a-z0-9._\-[\]]+):(\d{1,5})$/i.exec(bare);
 		if (textual) {
 			hostname = textual[1];

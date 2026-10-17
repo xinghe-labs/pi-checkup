@@ -161,6 +161,14 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					detail: duplicateTools.map(([name, owners]) => `${name} claimed by ${owners.join(" + ")}`).join("; "),
 					hint: "Rename one of them, or disable the package you do not need.",
 				}
+			: !tools.length
+			? {
+					group,
+					id: "tool-collisions",
+					title: "tool collisions",
+					status: "skip",
+					detail: "nothing registered to compare",
+				}
 			: { group, id: "tool-collisions", title: "tool collisions", status: "ok", detail: "none" },
 	);
 
@@ -182,6 +190,14 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					status: "fail",
 					detail: duplicateCommands.map(([name, owners]) => `/${name} claimed by ${owners.join(" + ")}`).join("; "),
 					hint: "Only one handler will run. Rename or remove one of the packages.",
+				}
+			: !commands.length
+			? {
+					group,
+					id: "command-collisions",
+					title: "command collisions",
+					status: "skip",
+					detail: "nothing registered to compare",
 				}
 			: { group, id: "command-collisions", title: "command collisions", status: "ok", detail: "none" },
 	);

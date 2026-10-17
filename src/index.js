@@ -93,8 +93,11 @@ export default function checkupExtension(pi) {
 				rechecked = true;
 				ctx.ui.setStatus?.("checkup", verdict);
 			}
+			// Same rule as the CLI: a refused or empty repair changed nothing, so
+			// asking for a reload would be a step that cannot matter.
+			const reload = rechecked ? "\n\nRun /reload so Pi picks up the changes." : "";
 			ctx.ui.notify(
-				`${report}\n\nRepairs\n${log || "  (nothing applied)"}\n\n${verdict}${rechecked ? "  ·  re-checked after repair" : ""}\n\nRun /reload so Pi picks up the changes.`,
+				`${report}\n\nRepairs\n${log || "  (nothing applied)"}\n\n${verdict}${rechecked ? "  ·  re-checked after repair" : ""}${reload}`,
 				"info",
 			);
 		},

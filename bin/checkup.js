@@ -171,12 +171,19 @@ async function main() {
 // written. Node surfaces that as an unhandled EPIPE rejection, so a truncated
 // pipe printed "pi-checkup crashed" with a stack for something that is not a
 // failure of the check at all. A consumer that stopped reading is a normal exit.
+// Anything else is a real write failure, and it goes through the same scrubbing
+// as a caught exception: an uncaught throw from an event listener printed a raw
+// stack, which is the one place a config value can slip out unredacted.
+const writeFailure = (e) => {
+	process.stderr.write(`pi-checkup crashed: ${scrubCredentials(String(e?.stack ?? e))}\n`);
+	process.exitCode = 2;
+};
 process.stdout.on("error", (e) => {
 	if (e?.code === "EPIPE") process.exit(0);
-	throw e;
+	writeFailure(e);
 });
 process.stderr.on("error", (e) => {
-	if (e?.code !== "EPIPE") throw e;
+	if (e?.code !== "EPIPE") writeFailure(e);
 });
 
 // `process.exit()` can truncate a pipe that has not drained, and a --json report

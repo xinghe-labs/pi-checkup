@@ -199,7 +199,13 @@ export async function run({
 		const canDedupe = settingsSource !== "runtime" && Boolean(settingsFile);
 		const listed = [...duplicates, ...mixedShapes].map(redactSource);
 		if (!listed.length) {
-			results.push(row("duplicates", "duplicate packages", "ok", "none"));
+			// Zero entries compared is not a pass: "none" over an empty list is the
+			// same vacuous green tick the rest of this file avoids.
+			results.push(
+				settings.packages.length
+					? row("duplicates", "duplicate packages", "ok", "none")
+					: row("duplicates", "duplicate packages", "skip", "no package entries to compare"),
+			);
 		} else {
 			const parts = [];
 			if (duplicates.size) parts.push(`${duplicates.size} listed twice`);

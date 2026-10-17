@@ -245,7 +245,13 @@ export function applyPruneMissingPackages(target, root) {
 	// a Pi layout that keeps packages elsewhere — makes every entry look missing.
 	// Emptying the list would leave Pi booting with no packages and no error, so
 	// the repair refuses instead of trusting its own resolution blindly.
-	if (plan.removed.length === settings.data.packages.length) {
+	//
+	// Counted against the entries this repair can actually resolve, not against
+	// every entry: `git:` sources and malformed entries are kept by prunePlan, so
+	// comparing with the full length let a list of one inspectable package plus
+	// one git source be emptied of the only thing it could see.
+	const resolvable = settings.data.packages.filter((spec) => resolvePackageDir(sourceOf(spec), root)).length;
+	if (plan.removed.length === resolvable) {
 		return {
 			ok: false,
 			message: `all ${plan.removed.length} package entr${plan.removed.length === 1 ? "y looks" : "ies look"} missing — refusing to empty the list. Check that the agent directory is the one Pi uses (PI_CODING_AGENT_DIR).`,

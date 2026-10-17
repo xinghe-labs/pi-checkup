@@ -16,7 +16,7 @@ Then, in a session:
 /checkup            run every check
 /checkup verbose    same, plus what to do about each finding
 /checkup json       machine-readable report
-/checkup fix        restore a broken config from its backup (asks first)
+/checkup fix        apply the safe repairs (asks first)
 ```
 
 ## The problem
@@ -161,8 +161,8 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Unverifiable sources | `git:` and `https:` packages, which Pi resolves internally and no static check can follow |
 | | Malformed entries | A `packages` entry that is not a source string — `null`, a number, an object without `source` |
 | | Unreadable directories | A package directory that exists but cannot be listed, which is a permission problem rather than a missing install |
-| | Manifest shape | A `package.json` that parses but is not an object, so nothing in it can be trusted |
-| **Binaries** | Bin directory | Whether `.bin` could be listed at all — no packages installed is a `skip`, an unreadable directory is a warning |
+| | Manifest shape | A `pi.extensions` entry that is not a string, so the entry files for that package could not be checked |
+| **Binaries** | Bin directory | Whether `.bin` could be listed at all — a missing `.bin` is a `skip` that still names the commands it should have held, an unreadable one is a warning |
 | | Dangling links | A symlink whose target is gone — a blocked `postinstall`, or an optional native dependency skipped for this platform. Only links are counted, so a Windows `.bin` of plain shim files reports `skip` instead of a green tick over nothing |
 | | Unreadable links | A link that exists but cannot be followed (permissions, a loop) — reported, not called broken |
 | | Install leftovers | `.<name>-<random>` staging links in `.bin`: an install is running right now, or was interrupted. Its own finding, not a broken package |
@@ -183,7 +183,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 
 ## `/checkup fix`
 
-Only reversible repairs are automated, and inside a session only one of them is offered:
+Only reversible repairs are automated, and inside a session it normally offers only the first:
 
 1. **Restore a config file** that is no longer valid JSON, from its newest sibling backup. The broken copy is kept.
 
@@ -308,16 +308,16 @@ src/
     binaries.js      PATH reachability and shadowing
     network.js       provider endpoints and DNS
     config.js        JSON validity, backups, duplicates, env refs
+    runtime.js       node, launcher, disk, proxy
 test/
   *.test.js          node --test, no Pi session needed
 scripts/
   lint.js            node --check over every source file (`npm run lint`)
-    runtime.js       node, launcher, disk, proxy
 ```
 
 Adding a check: export `group` and `run(ctx)`, return an array of `{ group, id, title, status, detail, hint? }`, and add the module to the `CHECKS` array in `src/checks/index.js`.
 
-`ctx` carries everything a check may read — `agentDir`, `settingsFile`, `modelsFile`, `settings`, `settingsSource`, `hasRuntime`, `offline` — so no check reads a path on its own. Tests point `agentDir` at a temp directory; see `test/checks.test.js`.
+`ctx` carries everything a check may read — `agentDir`, `settingsFile`, `projectSettingsFile`, `modelsFile`, `binDir`, `settings`, `settingsSource`, `env`, `offline`, `hasRuntime`, `pi`, `cwd` — so no check reads the process environment or a path on its own. Tests point `agentDir` at a temp directory; see `test/checks.test.js`.
 
 ## License
 

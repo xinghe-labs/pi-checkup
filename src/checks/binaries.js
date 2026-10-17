@@ -7,7 +7,7 @@
 //      PATH, so the name resolves to something else entirely.
 import path from "node:path";
 import fs from "node:fs";
-import { exists, isMissing, readJson, resolvePackageDir, sameCommand, sourceOf, whichAll } from "../util.js";
+import { exists, isMissing, isWindows, readJson, resolvePackageDir, sameCommand, sourceOf, whichAll } from "../util.js";
 
 export const group = "Binaries";
 
@@ -22,22 +22,27 @@ function isStagingArtifact(name) {
 	return name.startsWith(".") && /-[A-Za-z0-9]{6,12}$/.test(name);
 }
 
-function stagingRow(staging, danglingStaging) {
+function stagingRow(staging, danglingStaging, unreadableStaging = []) {
 	if (!staging.length) return null;
+	// `!exists()` is not `isMissing()`: a link this process cannot follow is not
+	// proof that it is gone, and it is not proof that it resolves either.
 	const broken = danglingStaging.length;
+	const unclear = unreadableStaging.length;
 	return {
 		group,
 		id: "staging",
 		title: "install leftovers",
-		status: broken ? "warn" : "ok",
+		status: broken || unclear ? "warn" : "ok",
 		detail: broken
 			? `${broken} of ${staging.length} leftover staging link(s) do not resolve: ${staging.slice(0, 6).join(", ")}`
-			: `${staging.length} leftover staging link(s), all resolve`,
+			: unclear
+				? `${staging.length} leftover staging link(s), ${unclear} of them could not be followed`
+				: `${staging.length} leftover staging link(s), all resolve`,
 		hint: broken ? "An install was interrupted. Re-run it for the affected packages, or delete these entries from node_modules/.bin." : undefined,
 	};
 }
 
-function danglingRow(dangling, linkCount, entryCount) {
+function danglingRow(dangling, linkCount, entryCount, unreadable = 0) {
 	if (dangling.length) {
 		return {
 			group,
@@ -62,7 +67,20 @@ function danglingRow(dangling, linkCount, entryCount) {
 			id: "dangling",
 			title: "dangling links",
 			status: "skip",
-			detail: `${entryCount} entries in .bin, none of them links (Windows shims are plain files)`,
+			detail: `${entryCount} entries in .bin, none of them links${isWindows ? " (Windows shims are plain files)" : ""}`,
+		};
+	}
+	// A link this process could not follow is not a link that resolved. Saying
+	// "N links all resolve" here while the row below warns about the same links
+	// was a green tick contradicting a warning in the same report.
+	const resolved = linkCount - unreadable;
+	if (resolved !== linkCount) {
+		return {
+			group,
+			id: "dangling",
+			title: "dangling links",
+			status: "warn",
+			detail: `${resolved} of ${linkCount} links resolve — ${unreadable} could not be followed`,
 		};
 	}
 	const noun = linkCount === 1 ? "link" : "links";
@@ -157,6 +175,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 	let linkCount = 0;
 	const staging = [];
 	const danglingStaging = [];
+	const unreadableStaging = [];
 	for (const entry of entries) {
 		const full = path.join(binDir, entry);
 		let isLink = false;
@@ -174,6 +193,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 		if (isStagingArtifact(entry)) {
 			staging.push(entry);
 			if (broken) danglingStaging.push(entry);
+			else if (unreadable) unreadableStaging.push(entry);
 			continue;
 		}
 		// Counted after the staging branch: a half-written npm temp link is not a
@@ -185,8 +205,11 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 
 	// Real breakage stays a failure; a half-finished install is reported as its
 	// own thing, because the fix is "let the install finish", not "reinstall".
-	const stagingFindings = stagingRow(staging, danglingStaging);
-	const results = [danglingRow(dangling, linkCount, entries.length - staging.length), ...(stagingFindings ? [stagingFindings] : [])];
+	const stagingFindings = stagingRow(staging, danglingStaging, unreadableStaging);
+	const results = [
+		danglingRow(dangling, linkCount, entries.length - staging.length, unreadableLinks.length),
+		...(stagingFindings ? [stagingFindings] : []),
+	];
 	if (unreadableLinks.length) {
 		results.push({
 			group,

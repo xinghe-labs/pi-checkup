@@ -410,6 +410,9 @@ export async function curlProbe(url, { proxy, headers = {}, maxTime = 6, timeout
 				.replace(/\\/g, "\\\\")
 				.replace(/"/g, '\\"');
 		const lines = [];
+		// The URL goes in the config file too: it can carry a query string, and
+		// argv is world-readable through `ps`. curl accepts `url = "…"`.
+		lines.push(`url = "${quote(url)}"`);
 		if (proxy) lines.push(`proxy = "${quote(proxy)}"`);
 		for (const [name, value] of Object.entries(headers)) {
 			if (value === undefined || value === null) continue;
@@ -419,7 +422,7 @@ export async function curlProbe(url, { proxy, headers = {}, maxTime = 6, timeout
 		const res = await sh(
 			"curl",
 			// -sS: quiet progress, but still print the failure reason to stderr.
-			["-sS", "-o", isWindows ? "NUL" : "/dev/null", "-w", "%{http_code}", "--max-time", String(maxTime), "--config", configFile, url],
+			["-sS", "-o", isWindows ? "NUL" : "/dev/null", "-w", "%{http_code}", "--max-time", String(maxTime), "--config", configFile],
 			timeout,
 		);
 		// curl prints 000 for a refused or timed-out connection and exits 7 or 28.
@@ -463,8 +466,10 @@ function looksLikeHost(value) {
 	if (!labels.length) return false;
 	if (labels.some((label) => label.length > 24)) return false;
 	const last = labels[labels.length - 1];
-	// A real host ends in a TLD-shaped label, or in an address octet.
-	return /^[a-z][a-z0-9-]*$/i.test(last) || /^\d{1,3}$/.test(last);
+	// A real host ends in a TLD-shaped label of at least two characters, or in an
+	// address octet. The length floor is what keeps `a.b.c` — or a truncated JWT —
+	// from being reprinted as if it were a hostname.
+	return /^[a-z][a-z0-9-]+$/i.test(last) || /^\d{1,3}$/.test(last);
 }
 
 /**
