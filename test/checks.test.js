@@ -732,6 +732,21 @@ test("packages: a pinned spec is resolved to the directory it installs into", as
 	assert.equal(rows.dirs.status, "ok");
 	assert.match(rows.dirs.detail, /2 present/);
 	assert.equal(rows.dirs.fix, undefined);
+	// The pin and the disk agree, so there is nothing to say about versions.
+	assert.equal(rows["version-pin"], undefined);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: a pin that does not match the disk is a warning", async () => {
+	// The point of a pin is that the code that runs is the code that was asked
+	// for; a different version on disk breaks that quietly.
+	const root = tmpRoot();
+	installPkg(root, "stale", { version: "0.9.2", pi: { extensions: ["./index.js"] } }, ["index.js"]);
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:stale@0.9.1"] });
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows["version-pin"].status, "warn");
+	assert.match(rows["version-pin"].detail, /installed 0\.9\.2/);
+	assert.match(rows["version-pin"].detail, /npm:stale@0\.9\.1/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 

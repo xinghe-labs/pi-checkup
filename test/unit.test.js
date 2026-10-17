@@ -14,6 +14,7 @@ import {
 	newestBackup,
 	ownerOf,
 	readJson,
+	pinnedVersion,
 	curlArgs,
 	curlConfig,
 	curlProbe,
@@ -339,6 +340,17 @@ test("globExists honours an absolute pattern instead of re-rooting it", () => {
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("pinnedVersion reports only an exact pin", () => {
+	assert.equal(pinnedVersion("npm:pi-lens@1.2.3"), "1.2.3");
+	assert.equal(pinnedVersion("npm:@scope/pkg@2.0.0-rc.1"), "2.0.0-rc.1");
+	// A range or a tag is satisfied by whatever is newest; comparing it to the
+	// installed version would warn forever.
+	assert.equal(pinnedVersion("npm:pi-lens@^1.2.3"), null);
+	assert.equal(pinnedVersion("npm:pi-lens@latest"), null);
+	assert.equal(pinnedVersion("npm:pi-lens"), null);
+	assert.equal(pinnedVersion("git+https://example.com/x.git"), null);
 });
 
 test("resolvePackageDir drops a version pin but keeps the scope", () => {

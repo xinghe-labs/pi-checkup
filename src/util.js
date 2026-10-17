@@ -291,6 +291,20 @@ export function resolvePackageDir(spec, root = agentDir()) {
 }
 
 /**
+ * The exact version an `npm:` spec pins, or null.
+ *
+ * Only an exact pin is comparable: `^2` or `latest` is a request the installer
+ * is free to satisfy with whatever is newest, and calling that a mismatch would
+ * be a warning nobody can clear.
+ */
+export function pinnedVersion(spec) {
+	const s = sourceOf(spec);
+	if (!s || !s.startsWith("npm:")) return null;
+	const m = /@=?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/.exec(s.slice(4));
+	return m ? m[1] : null;
+}
+
+/**
  * Match one path segment against a `*`-glob.
  *
  * Hand-rolled instead of compiled to a RegExp: a manifest glob like

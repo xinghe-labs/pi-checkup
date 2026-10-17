@@ -7,7 +7,17 @@
 // never committed.
 import path from "node:path";
 import fs from "node:fs";
-import { exists, globExists, makeRow, readJson, redactSource, resolvePackageDir, sourceOf } from "../util.js";
+import {
+	exists,
+	globExists,
+	makeRow,
+	pinnedVersion,
+	readJson,
+	redactSource,
+	resolvePackageDir,
+	scrubCredentials,
+	sourceOf,
+} from "../util.js";
 
 export const group = "Packages";
 
@@ -81,6 +91,7 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 	const badSpecs = [];
 	const badExtensions = [];
 	const missingEntry = [];
+	const versionMismatch = [];
 	const unverifiable = [];
 	// Counted separately so a check that had nothing to look at reports skipped
 	// instead of printing a green tick over zero inspected packages.
@@ -135,6 +146,13 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 			continue;
 		}
 		manifestRead++;
+		// A pin and a different installed version is the gap between the code that
+		// was asked for and the code that runs. Only exact pins are comparable.
+		const pin = pinnedVersion(source);
+		const installed = manifest.data?.version;
+		if (pin && typeof installed === "string" && installed !== pin) {
+			versionMismatch.push(`${redactSource(source)} (installed ${scrubCredentials(installed.slice(0, 40))})`);
+		}
 		const declared = manifest.data?.pi?.extensions;
 		if (!declared) continue; // convention-directory package, nothing to verify
 		const raw = Array.isArray(declared) ? declared : [declared];
@@ -231,6 +249,21 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		// manifest is not "nothing to inspect" — the row above says one existed.
 		results.push(
 			row("manifests", "manifests", "skip", unreadableManifest.length ? "no manifest could be read" : "nothing to inspect"),
+		);
+	}
+
+	// --- version pins ------------------------------------------------------
+	if (versionMismatch.length) {
+		results.push(
+			row(
+				"version-pin",
+				"version pins",
+				"warn",
+				`${versionMismatch.length} pinned package(s) run a different version: ${preview(versionMismatch, 2)}`,
+				{
+					hint: "settings.json pins a version and the copy on disk is another one. Reinstall that package to make the disk match, or update the pin.",
+				},
+			),
 		);
 	}
 
