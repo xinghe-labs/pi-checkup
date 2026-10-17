@@ -177,3 +177,90 @@ test("restore writes the backup's bytes verbatim, formatting included", () => {
 	assert.equal(fs.readFileSync(file, "utf8"), original);
 	fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("prune resolves package directories against the root it is given", async () => {
+	const { applyPruneMissingPackages } = await import("../src/repair.js");
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:present", "npm:gone"] }, null, 2));
+	fs.mkdirSync(path.join(dir, "npm", "node_modules", "present"), { recursive: true });
+
+	// A wrong root would resolve every entry somewhere else and delete all of
+	// them, so the root is an explicit parameter rather than dirname(target).
+	const res = applyPruneMissingPackages(file, dir);
+	assert.equal(res.ok, true);
+	assert.match(res.message, /npm:gone/);
+	assert.doesNotMatch(res.message, /npm:present/);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).packages, ["npm:present"]);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("prune keeps an entry it cannot stat for any reason other than absence", async () => {
+	const { applyPruneMissingPackages } = await import("../src/repair.js");
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:locked", "npm:gone"] }));
+	const locked = path.join(dir, "npm", "node_modules", "locked");
+	fs.mkdirSync(locked, { recursive: true });
+
+	const original = fs.statSync;
+	fs.statSync = (target, ...rest) => {
+		if (String(target) === locked) {
+			const err = new Error("EACCES");
+			err.code = "EACCES";
+			throw err;
+		}
+		return original.call(fs, target, ...rest);
+	};
+	try {
+		const res = applyPruneMissingPackages(file, dir);
+		assert.match(res.message, /npm:gone/);
+		// Only a path that is genuinely gone justifies deleting a settings entry;
+		// a permissions problem must not be silently "repaired" away.
+		assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).packages, ["npm:locked"]);
+	} finally {
+		fs.statSync = original;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("two repairs in the same millisecond never clobber each other's backup", async () => {
+	const { applyDedupePackages } = await import("../src/repair.js");
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:a", "npm:a", "npm:b", "npm:b"] }));
+	applyDedupePackages(file);
+	// Put the duplicates back and repair again inside the same millisecond.
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:a", "npm:a"] }));
+	applyDedupePackages(file);
+
+	const backups = fs.readdirSync(dir).filter((f) => f.startsWith("settings.json.checkup-bak-"));
+	// COPYFILE_EXCL turns a name collision into a retry instead of a silent loss
+	// of the only recovery point the first repair created.
+	assert.equal(backups.length, 2, backups.join(", "));
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a repair leaves no temp file behind", async () => {
+	const { applyDedupePackages } = await import("../src/repair.js");
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:a", "npm:a"] }));
+	applyDedupePackages(file);
+	const leftovers = fs.readdirSync(dir).filter((f) => f.includes("checkup-tmp"));
+	assert.deepEqual(leftovers, []);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a repair preserves the file mode", async () => {
+	const { applyDedupePackages } = await import("../src/repair.js");
+	if (process.platform === "win32") return; // POSIX modes do not apply
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:a", "npm:a"] }), { mode: 0o600 });
+	fs.chmodSync(file, 0o600);
+	applyDedupePackages(file);
+	// A 0600 models.json must not come back 0644 through the rename.
+	assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+	fs.rmSync(dir, { recursive: true, force: true });
+});

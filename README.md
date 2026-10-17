@@ -40,12 +40,15 @@ Then, in a session:
 The in-session command is useless in the one case you need it most: Pi is installed but will not boot. So the same checks also ship as a standalone CLI.
 
 ```bash
-npx pi-checkup           # full report
-npx pi-checkup --offline # skip every network probe
-npx pi-checkup --json    # for scripts
+npx pi-checkup            # full report
+npx pi-checkup --offline  # skip every network probe
+npx pi-checkup --json     # for scripts
+npx pi-checkup --fix -y   # apply the safe repairs without prompting
 ```
 
-It exits `1` when any check fails, so it works as a pre-flight step in CI or a shell profile. The registry section reports skipped — auditing loaded tools genuinely requires a live process — and the CLI says so instead of implying a clean bill of health.
+It exits `1` when any check fails, so it works as a pre-flight step in CI or a shell profile. After a repair it re-runs the checks and exits on the new result, so `pi-checkup --fix -y && start-pi` does what it looks like it does. `--json` cannot be combined with `--fix`: the JSON is a single snapshot, and a repair changes what the snapshot describes.
+
+The registry section reports skipped — auditing loaded tools genuinely requires a live process — and the CLI says so instead of implying a clean bill of health.
 
 ```text
 $ npx pi-checkup
@@ -56,15 +59,15 @@ Packages
   ✓ manifests        13 readable
   ✓ entry files      12 manifest(s) resolve
 ...
-19 checks: 17 ok, 1 warning, 0 failed, 1 skipped
-Run `pi-checkup --verbose` to show what to do about each finding.
+19 checks: 16 ok, 1 warning, 0 failed, 2 skipped
+Run `npx pi-checkup --verbose` to show what to do about each finding.
 
 ! 1 warning  ·  run /checkup inside Pi for registry checks
 ```
 
 ## Real output
 
-This is an actual run on a working install — 22 of 23 checks pass, and the one warning is a real problem that `pi list` showed nothing about:
+This is an actual run on a working install, copied out of the TUI at 80 columns. 22 of 24 checks pass, one is skipped because there is genuinely nothing to look at, and the one warning is a real problem that `pi list` said nothing about:
 
 ```text
 Registry
@@ -80,25 +83,27 @@ Packages
 Binaries
   ✓ dangling links   19 entries all resolve
   ✓ shadowed names   none
-  ! unreachable bins 6 package command(s) not on PATH: pi-lens, pi-lens-analyze, pi-lens-mcp, pi-mcp-adapter, pi-subagents, pi-web-access-mcp
-      Extensions that call these by full path still work; you and the agent cannot invoke them by name.
+  ! unreachable bins   6 package command(s) not on PATH: pi-web-access-mcp,
+                       pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp,
+                       pi-lens-analyze
 Network
   ✓ providers        2 endpoint(s) reachable
-  ✓ dns              2 provider host(s) resolve normally
+  ✓ dns              1 provider host(s) resolve normally
 Config
-  ✓ settings.json    valid JSON
+  ✓ settings.json    valid JSON (values read from the running session)
   ✓ models.json      valid JSON
   ✓ project settings none
-  ✓ backups          2 file(s) backed up
+  ✓ backups          2 file(s) backed up; edited since the newest backup:
+                     settings.json
   ✓ duplicate packages none
-  ✓ env references   all set
+  · env references   no $VAR reference in models.json credentials
 Runtime
   ✓ node             v22.23.3
   ✓ pi launcher      /root/.pi/agent/bin/pi
-  ✓ disk             6% used, 951.1 GB free
-  ✓ proxy            127.0.0.1:10808 accepting connections
+  ✓ disk             6% used, 950.9 GB free
+  ✓ proxy            http://127.0.0.1:10808 accepting connections
 
-23 checks: 22 ok, 1 warning, 0 failed
+24 checks: 22 ok, 1 warning, 0 failed, 1 skipped
 Run `/checkup verbose` to show what to do about each finding.
 ```
 
@@ -142,15 +147,22 @@ Nothing is repaired unless a check found something wrong, so a healthy install w
 
 ```json
 {
-  "summary": { "total": 23, "ok": 21, "warn": 2, "fail": 0, "skip": 0 },
+  "summary": { "total": 24, "ok": 22, "warn": 1, "fail": 0, "skip": 1 },
   "checks": [
     {
       "group": "Binaries",
       "id": "unreachable",
       "title": "unreachable bins",
       "status": "warn",
-      "detail": "2 package command(s) not on PATH: pi-lens, pi-subagents",
+      "detail": "6 package command(s) not on PATH: pi-web-access-mcp, pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp, pi-lens-analyze",
       "hint": "Extensions that call these by full path still work; you and the agent cannot invoke them by name."
+    },
+    {
+      "group": "Config",
+      "id": "env",
+      "title": "env references",
+      "status": "skip",
+      "detail": "no $VAR reference in models.json credentials"
     }
   ]
 }
@@ -161,11 +173,11 @@ Exit-worthy statuses are `fail`; `warn` means something is degraded but working.
 ## Design principles
 
 - **No traffic to anyone but your own provider.** The only outbound requests are `<baseUrl>/models` for providers already in `models.json`, plus a DNS lookup of those same hosts. The proxy check is a plain TCP connect to the proxy's own address — set `PI_CHECKUP_PROBE_URL` if you want a real end-to-end forwarding test.
-- **No secrets printed, no keys validated.** A provider probe sends whatever auth header your config already defines and ignores the response body. A key on a plain-`http://` endpoint is never sent.
-- **Non-blocking.** Every check runs concurrently with a hard timeout. A hung endpoint costs 8 seconds, not the whole command.
+- **No secrets printed, no keys validated.** A provider probe sends whatever auth header your config already defines and ignores the response body. A key on a plain-`http://` endpoint is never sent. A proxy URL is always shown as scheme, host and port — corporate proxies carry credentials in the URL, and `https_proxy` is the one place they usually live in plain text.
+- **Non-blocking.** Every check runs concurrently, and every outbound call has its own timeout — 8s for a probe, 4s for DNS, 3s for a TCP connect — under a 30s per-module backstop. A hung endpoint costs 8 seconds, not the whole command.
 - **A crashing check is a finding, not a crash.** If a check module throws, the report says which one, marks it failed, and still shows everything else.
 - **A check with nothing to inspect says so.** Zero packages present reports `skip`, never a green tick over nothing.
-- **Cross-platform.** Node built-ins only. `which`/`where`, `curl` vs `NUL`, and path separators are handled; checks that cannot run are marked skipped rather than failed.
+- **Cross-platform.** Node built-ins only. `PATH` is resolved in-process against `PATHEXT` on Windows and the executable bit on POSIX, so a minimal container without `which` still works; `curl` vs `NUL`, symlinked package stores, and path separators are handled. Checks that cannot run are marked skipped rather than failed.
 - **Zero dependencies.** Nothing to audit, nothing to break on a Pi upgrade.
 
 ## Known limitations
@@ -184,7 +196,7 @@ Being explicit about what this cannot see:
 ```bash
 git clone https://github.com/xinghe-labs/pi-checkup
 cd pi-checkup
-node --test          # unit tests, no Pi session needed
+node --test          # 62 tests, no Pi session needed
 ```
 
 To try a local checkout without installing:

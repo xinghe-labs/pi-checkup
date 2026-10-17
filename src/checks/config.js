@@ -2,7 +2,7 @@
 // entries that silently cancel each other out?
 import fs from "node:fs";
 import path from "node:path";
-import { exists, newestBackup, readJson } from "../util.js";
+import { exists, newestBackup, readJson, sourceOf } from "../util.js";
 
 export const group = "Config";
 
@@ -11,10 +11,6 @@ export const group = "Config";
 // every literal dollar sign in a comment or note was reported as a missing
 // environment variable, so the check cried wolf on healthy configs.
 const ENV_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
-
-function sourceOf(spec) {
-	return typeof spec === "string" ? spec : spec?.source;
-}
 
 /** The models.json strings Pi will actually run through env interpolation. */
 function interpolatedFields(models) {
@@ -34,10 +30,13 @@ function interpolatedFields(models) {
 	return out;
 }
 
-export async function run({ cwd, agentDir: root, settingsFile, modelsFile, settings }) {
+export async function run({ cwd, agentDir: root, settingsFile, modelsFile, settings, settingsSource, hasRuntime }) {
 	const results = [];
 	/** One finding row, so the checks below stay flat and readable. */
 	const row = (id, title, status, detail, extra = {}) => ({ group, id, title, status, detail, ...extra });
+	// The CLI cannot run a slash command, so a hint that names one is useless to
+	// the exact reader the CLI exists for: someone whose Pi will not boot.
+	const fixCommand = hasRuntime ? "/checkup fix" : "npx pi-checkup --fix --yes";
 
 	const files = [
 		{ label: "settings.json", file: settingsFile, required: true },
@@ -61,15 +60,17 @@ export async function run({ cwd, agentDir: root, settingsFile, modelsFile, setti
 		}
 		const parsed = readJson(file);
 		if (parsed.ok) {
-			results.push(row(`file:${label}`, label, "ok", "valid JSON"));
+			// In-session, settings come from the running process and the file on disk
+			// is not what the checks actually saw. Saying so prevents the report from
+			// implying it validated a file it never read.
+			const fromRuntime = label === "settings.json" && settingsSource === "runtime";
+			results.push(row(`file:${label}`, label, "ok", fromRuntime ? "valid JSON (values read from the running session)" : "valid JSON"));
 			continue;
 		}
 		const backup = newestBackup(file);
 		results.push(
 			row(`file:${label}`, label, "fail", `${file} is not valid JSON: ${parsed.error}`, {
-				hint: backup
-					? `A backup exists at ${path.basename(backup)}. Run \`/checkup fix\` to restore it.`
-					: "No backup found; fix it by hand.",
+				hint: backup ? `A backup exists at ${path.basename(backup)}. Run \`${fixCommand}\` to restore it.` : "No backup found; fix it by hand.",
 				fix: backup ? "restore-config" : undefined,
 				fixTarget: backup ? file : undefined,
 			}),
@@ -97,17 +98,28 @@ export async function run({ cwd, agentDir: root, settingsFile, modelsFile, setti
 		}
 	}
 	if (backedUp) {
+		// The caveat goes in the detail, not the hint: the default report only shows
+		// hints for non-ok rows, so a load-bearing hint on an ok row was invisible
+		// unless the user already knew to pass --verbose.
 		results.push(
-			row("backups", "backups", "ok", `${backedUp} file(s) backed up`, {
-				hint: stale.length
-					? `Edited since the newest backup: ${stale.join(", ")}. That state cannot be rolled back to, so copy it somewhere safe before the next edit.`
-					: undefined,
-			}),
+			row(
+				"backups",
+				"backups",
+				"ok",
+				stale.length
+					? `${backedUp} file(s) backed up; edited since the newest backup: ${stale.join(", ")}`
+					: `${backedUp} file(s) backed up`,
+				{
+					hint: stale.length
+						? "That state cannot be rolled back to, so copy it somewhere safe before the next edit."
+						: undefined,
+				},
+			),
 		);
 	} else {
 		results.push(
 			row("backups", "backups", "skip", "none yet — created before the first repair", {
-				hint: "`/checkup fix` writes one beside the file it changes.",
+				hint: `\`${fixCommand}\` writes one beside the file it changes.`,
 			}),
 		);
 	}
@@ -127,9 +139,11 @@ export async function run({ cwd, agentDir: root, settingsFile, modelsFile, setti
 		results.push(
 			duplicates.size
 				? row("duplicates", "duplicate packages", "warn", `${[...duplicates].join(", ")} listed more than once`, {
-						hint: "Run `/checkup fix` to collapse them to one entry each.",
-						fix: "dedupe-packages",
-						fixTarget: settingsFile,
+						hint: `Run \`${fixCommand}\` to collapse them to one entry each.`,
+						// Deduping the file is only correct when the file is what the report
+						// read; in-session the list may have come from the running process.
+						fix: settingsSource === "runtime" ? undefined : "dedupe-packages",
+						fixTarget: settingsSource === "runtime" ? undefined : settingsFile,
 					})
 				: row("duplicates", "duplicate packages", "ok", "none"),
 		);
@@ -140,19 +154,28 @@ export async function run({ cwd, agentDir: root, settingsFile, modelsFile, setti
 	const models = readJson(modelsFile);
 	if (models.ok) {
 		const missing = new Set();
+		let references = 0;
 		for (const value of interpolatedFields(models.data)) {
 			for (const [, braced, bare] of value.matchAll(ENV_REF)) {
 				const name = braced ?? bare;
-				if (name && !(name in process.env)) missing.add(name);
+				if (!name) continue;
+				references++;
+				// An exported-but-empty variable is not usable as a credential, so
+				// `FOO=""` counts as unset rather than as set.
+				if (!process.env[name]) missing.add(name);
 			}
 		}
-		results.push(
-			missing.size
-				? row("env", "env references", "warn", `referenced but unset: ${[...missing].join(", ")}`, {
-						hint: "Export them before starting Pi, or the provider that needs them will fail at request time.",
-					})
-				: row("env", "env references", "ok", "all set"),
-		);
+		if (!references) {
+			results.push(row("env", "env references", "skip", "no $VAR reference in models.json credentials"));
+		} else {
+			results.push(
+				missing.size
+					? row("env", "env references", "warn", `referenced but unset: ${[...missing].join(", ")}`, {
+							hint: "Export them before starting Pi, or the provider that needs them will fail at request time.",
+						})
+					: row("env", "env references", "ok", `${references} reference(s) all set`),
+			);
+		}
 	}
 
 	return results;

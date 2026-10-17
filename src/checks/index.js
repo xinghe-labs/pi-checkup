@@ -14,28 +14,59 @@ import * as runtime from "./runtime.js";
 
 export const CHECKS = [registry, packages, binaries, network, config, runtime];
 
+// A safety net, not the primary bound: every outbound call already has its own
+// timeout (fetch 8s, DNS 4s, TCP 3s, subprocess 8s). This exists so a future
+// check cannot reintroduce the unbounded-wait class of bug that a synchronous
+// `dns.lookup` used to be.
+export const MODULE_TIMEOUT_MS = 30_000;
+
 /**
  * Run every check module against a context built by buildContext().
  * @param {object} ctx
  * @param {Array<{group?: string, run: Function}>} [modules] overridable so tests can inject a crashing module
+ * @param {{ timeoutMs?: number }} [options]
  */
-export async function runChecks(ctx, modules = CHECKS) {
+export async function runChecks(ctx, modules = CHECKS, { timeoutMs = MODULE_TIMEOUT_MS } = {}) {
 	const settled = await Promise.all(
 		modules.map(async (mod) => {
 			const name = mod.group ?? "Unknown";
+			let timer;
+			const timeout = new Promise((resolve) => {
+				timer = setTimeout(() => {
+					resolve([
+						{
+							group: name,
+							id: `timeout:${name}`,
+							title: name.toLowerCase(),
+							status: "fail",
+							detail: `check did not finish within ${Math.round(timeoutMs / 1000)}s`,
+							hint: "Usually a blocked network call. Try --offline, or report this with the check name above.",
+						},
+					]);
+				}, timeoutMs);
+				// Do not hold the process open just to fire a timeout nobody needs.
+				timer.unref?.();
+			});
 			try {
-				return await mod.run(ctx);
-			} catch (e) {
-				return [
-					{
-						group: name,
-						id: `crash:${name}`,
-						title: name.toLowerCase(),
-						status: "fail",
-						detail: `check crashed: ${String(e?.message ?? e)}`,
-						hint: "This is a bug in pi-checkup, not necessarily in your setup. Please report it with the message above.",
-					},
-				];
+				const run = (async () => {
+					try {
+						return await mod.run(ctx);
+					} catch (e) {
+						return [
+							{
+								group: name,
+								id: `crash:${name}`,
+								title: name.toLowerCase(),
+								status: "fail",
+								detail: `check crashed: ${String(e?.message ?? e)}`,
+								hint: "This is a bug in pi-checkup, not necessarily in your setup. Please report it with the message above.",
+							},
+						];
+					}
+				})();
+				return await Promise.race([run, timeout]);
+			} finally {
+				clearTimeout(timer);
 			}
 		}),
 	);

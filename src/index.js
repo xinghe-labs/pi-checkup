@@ -69,7 +69,7 @@ export default function checkupExtension(pi) {
 			}
 
 			const { applyRepairs } = await import("./repair.js");
-			const applied = await applyRepairs(fixable);
+			const applied = await applyRepairs(fixable, { agentDir: ctx.agentDir });
 
 			const log = applied.map((a) => `  ${a.ok ? "✓" : "✗"} ${a.message}`).join("\n");
 			ctx.ui.notify(`${report}\n\nRepairs\n${log || "  (nothing applied)"}\n\nRun /reload so Pi picks up the changes.`, "info");

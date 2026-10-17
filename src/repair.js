@@ -6,16 +6,52 @@
 // change, and neither one deletes a package or disables an extension.
 import fs from "node:fs";
 import path from "node:path";
-import { newestBackup, readJson, resolvePackageDir } from "./util.js";
-
-function sourceOf(spec) {
-	return typeof spec === "string" ? spec : spec?.source;
-}
+import { isMissing, newestBackup, readJson, resolvePackageDir, sourceOf } from "./util.js";
 
 function stamp() {
 	// Milliseconds are kept: two repairs in the same second would otherwise
 	// write the same backup name and the second copy would clobber the first.
 	return new Date().toISOString().replace(/[:.]/g, "-").slice(0, 23);
+}
+
+/**
+ * Copy `target` to a fresh timestamped sibling, never overwriting an existing one.
+ *
+ * Two repairs can land in the same millisecond, and two concurrent checkup
+ * processes can collide on the name entirely; COPYFILE_EXCL turns that from a
+ * silent loss of a recovery point into a retry.
+ */
+function copyBackup(target, label = "checkup-bak") {
+	const base = `${target}.${label}-${stamp()}`;
+	for (let i = 0; i < 50; i++) {
+		const candidate = i === 0 ? base : `${base}-${i}`;
+		try {
+			fs.copyFileSync(target, candidate, fs.constants.COPYFILE_EXCL);
+			return candidate;
+		} catch (e) {
+			if (e?.code !== "EEXIST") throw e;
+		}
+	}
+	throw new Error(`could not find a free backup name for ${path.basename(target)}`);
+}
+
+/** Flush a directory entry so a rename survives a power loss. Best effort. */
+function syncDir(dir) {
+	let fd;
+	try {
+		fd = fs.openSync(dir, "r");
+		fs.fsyncSync(fd);
+	} catch {
+		// Not supported on Windows, and not worth failing a successful repair over.
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				/* already gone */
+			}
+		}
+	}
 }
 
 /**
@@ -27,20 +63,48 @@ function stamp() {
  * atomic on POSIX and on Windows (rename replaces an existing file there too).
  * The original mode is carried over, because a models.json that was chmod 600
  * must not come back 644.
+ *
+ * The temp file is fsynced before the rename and the directory after it, so a
+ * power loss cannot leave the rename visible while the new content is not.
  */
 function writeAtomic(target, content) {
-	const tmp = `${target}.checkup-tmp-${stamp()}`;
 	let mode;
 	try {
 		mode = fs.statSync(target).mode;
 	} catch {
 		mode = undefined;
 	}
+
+	const base = `${target}.checkup-tmp-${stamp()}`;
+	let fd;
+	let tmp;
+	for (let i = 0; i < 50 && fd === undefined; i++) {
+		const candidate = i === 0 ? base : `${base}-${i}`;
+		try {
+			fd = fs.openSync(candidate, "wx", mode ?? 0o600);
+			tmp = candidate;
+		} catch (e) {
+			if (e?.code !== "EEXIST") throw e;
+		}
+	}
+	if (fd === undefined) throw new Error(`could not create a temp file next to ${path.basename(target)}`);
+
 	try {
-		fs.writeFileSync(tmp, content, { mode: mode ?? 0o600 });
+		fs.writeFileSync(fd, content);
+		fs.fsyncSync(fd);
+		fs.closeSync(fd);
+		fd = undefined;
 		if (mode !== undefined) fs.chmodSync(tmp, mode);
 		fs.renameSync(tmp, target);
+		syncDir(path.dirname(target));
 	} catch (e) {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				/* already closed */
+			}
+		}
 		try {
 			fs.rmSync(tmp, { force: true });
 		} catch {
@@ -59,8 +123,7 @@ export function applyRestoreConfig(target) {
 	if (!backup) return { ok: false, message: `no backup found for ${path.basename(target)}` };
 	const parsed = readJson(backup);
 	if (!parsed.ok) return { ok: false, message: `backup ${path.basename(backup)} is not valid JSON either` };
-	const aside = `${target}.broken-${stamp()}`;
-	fs.copyFileSync(target, aside);
+	const aside = copyBackup(target, "broken");
 	// The backup is valid JSON (checked above), so restoring its bytes verbatim
 	// keeps any formatting the user had.
 	writeAtomic(target, fs.readFileSync(backup, "utf8"));
@@ -92,8 +155,7 @@ export function applyDedupePackages(target) {
 	const removed = settings.data.packages.length - kept.length;
 	if (removed === 0) return { ok: true, message: "nothing to dedupe" };
 
-	const backup = `${target}.checkup-bak-${stamp()}`;
-	fs.copyFileSync(target, backup);
+	const backup = copyBackup(target);
 	settings.data.packages = kept;
 	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
@@ -102,17 +164,22 @@ export function applyDedupePackages(target) {
 	};
 }
 
-/** Drop settings entries whose package directory is not on disk. */
-export function applyPruneMissingPackages(target) {
+/**
+ * Drop settings entries whose package directory is not on disk.
+ *
+ * `root` is the agent directory Pi resolves `npm:` and `./` sources against. It
+ * is passed in rather than derived from the target path: guessing it from
+ * `dirname(target)` would resolve every entry under the wrong root if this were
+ * ever pointed at a project-level settings file.
+ */
+export function applyPruneMissingPackages(target, root = path.dirname(target)) {
 	const settings = readJson(target);
 	if (!settings.ok) return { ok: false, message: `${path.basename(target)} is not valid JSON` };
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to prune" };
 
-	// settings.json lives directly in the agent directory, which is the root
-	// resolvePackageDir() resolves npm: specs against.
-	const root = path.dirname(target);
 	const kept = [];
 	const removed = [];
+	const unreadable = [];
 	for (const spec of settings.data.packages) {
 		const source = sourceOf(spec);
 		const dir = resolvePackageDir(source, root);
@@ -122,20 +189,18 @@ export function applyPruneMissingPackages(target) {
 			kept.push(spec);
 			continue;
 		}
-		let present = false;
-		try {
-			present = fs.statSync(dir).isDirectory();
-		} catch {
-			present = false;
+		if (!isMissing(dir)) {
+			// Present, or present-but-unreadable. Only a path that is genuinely gone
+			// justifies deleting the user's settings entry.
+			kept.push(spec);
+			continue;
 		}
-		if (present) kept.push(spec);
-		else removed.push(String(source));
+		removed.push(String(source));
 	}
 
 	if (!removed.length) return { ok: true, message: "nothing to prune" };
 
-	const backup = `${target}.checkup-bak-${stamp()}`;
-	fs.copyFileSync(target, backup);
+	const backup = copyBackup(target);
 	settings.data.packages = kept;
 	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
@@ -146,8 +211,8 @@ export function applyPruneMissingPackages(target) {
 
 /** Named repairs, keyed by the `fix` field a check emits. */
 const REPAIRS = {
-	"restore-config": applyRestoreConfig,
-	"dedupe-packages": applyDedupePackages,
+	"restore-config": (target) => applyRestoreConfig(target),
+	"dedupe-packages": (target) => applyDedupePackages(target),
 	"prune-missing-packages": applyPruneMissingPackages,
 };
 
@@ -157,8 +222,11 @@ export const REPAIR_NAMES = Object.keys(REPAIRS);
  * Apply every fixable finding, at most once per (repair, file) pair.
  * A repair that throws is reported, not propagated — one failed write must not
  * stop the remaining repairs.
+ *
+ * `agentDir` is threaded through to the prune repair so package directories are
+ * resolved against the same root the checks inspected.
  */
-export async function applyRepairs(findings) {
+export async function applyRepairs(findings, { agentDir } = {}) {
 	const applied = [];
 	const seen = new Set();
 	for (const finding of findings) {
@@ -172,7 +240,7 @@ export async function applyRepairs(findings) {
 			continue;
 		}
 		try {
-			applied.push(repair(finding.fixTarget));
+			applied.push(repair(finding.fixTarget, agentDir));
 		} catch (e) {
 			applied.push({ ok: false, message: `${finding.title}: ${String(e?.message ?? e)}` });
 		}

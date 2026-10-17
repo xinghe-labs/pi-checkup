@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { globExists, humanBytes, newestBackup, ownerOf, resolvePackageDir } from "../src/util.js";
+import { bareHost, globExists, humanBytes, isLoopbackHost, newestBackup, ownerOf, resolvePackageDir, sourceOf } from "../src/util.js";
 import { renderReport, renderVerdict, summarize, toJson } from "../src/render.js";
 import checkupExtension from "../src/index.js";
 
@@ -124,4 +124,61 @@ test("the extension exports a factory that registers a command", () => {
 	assert.equal(registered.length, 1);
 	assert.equal(registered[0].name, "checkup");
 	assert.equal(typeof registered[0].spec.handler, "function");
+});
+
+test("summarize counts an unknown status as a failure", () => {
+	// A malformed row used to land in `total` and in no bucket, so a report that
+	// contained only unknown statuses summarized as "all clear".
+	const s = summarize([{ status: "ok" }, { status: "weird" }]);
+	assert.equal(s.total, 2);
+	assert.equal(s.fail, 1);
+	assert.equal(s.ok, 1);
+});
+
+test("a title longer than the title column keeps the detail aligned", () => {
+	const long = "a-very-long-check-name-that-cannot-fit";
+	const report = renderReport(
+		[
+			{ group: "Config", id: "a", title: long, status: "ok", detail: "one two three four five six seven eight nine ten" },
+			{ group: "Config", id: "b", title: "short", status: "ok", detail: "x" },
+		],
+		{ width: 40 },
+	);
+	const lines = report.split("\n");
+	// The title itself is never truncated -- it is the identifier the user needs
+	// to look up -- so it gets a line of its own and the detail starts on the
+	// next one, at the same column every other wrapped line uses.
+	const titleLine = lines.findIndex((l) => l.includes(long));
+	assert.ok(titleLine >= 0, report);
+	const detailLines = lines.slice(titleLine + 1, titleLine + 4);
+	assert.ok(detailLines[0].startsWith(" ".repeat(4 + 8 + 1)), report);
+	// Every wrapped line after the first fits the requested width.
+	for (const line of detailLines) assert.ok(line.length <= 40, `over 40: ${line}`);
+	assert.match(report, /\n {2}✓ short +x/);
+});
+
+test("isLoopbackHost recognises IPv6 literals with and without brackets", () => {
+	assert.equal(isLoopbackHost("::1"), true);
+	assert.equal(isLoopbackHost("[::1]"), true);
+	assert.equal(isLoopbackHost("0:0:0:0:0:0:0:1"), true);
+	assert.equal(isLoopbackHost("127.0.0.1"), true);
+	assert.equal(isLoopbackHost("127.1.2.3"), true);
+	assert.equal(isLoopbackHost("localhost"), true);
+	assert.equal(isLoopbackHost("api.localhost"), true);
+	assert.equal(isLoopbackHost("api.example.com"), false);
+	assert.equal(isLoopbackHost("fe80::1"), false);
+	assert.equal(isLoopbackHost(undefined), false);
+	assert.equal(bareHost("[::1]"), "::1");
+	assert.equal(bareHost("::1"), "::1");
+});
+
+test("sourceOf reads both settings entry shapes and ignores junk", () => {
+	assert.equal(sourceOf("npm:pi-lens"), "npm:pi-lens");
+	assert.equal(sourceOf({ source: "npm:pi-lens" }), "npm:pi-lens");
+	// null is the documented "this entry carries no source" answer, so callers
+	// can treat it as a plain falsy value without distinguishing undefined.
+	assert.equal(sourceOf({}), null);
+	assert.equal(sourceOf(null), null);
+	assert.equal(sourceOf(42), null);
+	assert.equal(sourceOf({ source: 42 }), null);
 });

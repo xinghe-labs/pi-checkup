@@ -6,7 +6,12 @@ const GROUP_ORDER = ["Registry", "Packages", "Binaries", "Network", "Config", "R
 
 export function summarize(results) {
 	const counts = { ok: 0, warn: 0, fail: 0, skip: 0 };
-	for (const r of results) counts[r.status] = (counts[r.status] ?? 0) + 1;
+	for (const r of results) {
+		// An unrecognised status would otherwise be counted in `total` and in
+		// nothing else, letting a malformed row render as "all clear".
+		const key = Object.hasOwn(counts, r.status) ? r.status : "fail";
+		counts[key] += 1;
+	}
 	return { total: results.length, ...counts };
 }
 
@@ -67,7 +72,9 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 	});
 
 	// Wide enough for the longest title in this report, so one long name does not
-	// push a single row's detail out of alignment with every other row.
+	// push a single row's detail out of alignment with every other row. A title
+	// longer than the cap gets its detail on its own line rather than shoving it
+	// past the column every wrapped continuation line uses.
 	const titleWidth = Math.min(22, Math.max(8, ...results.map((r) => r.title.length)));
 	const detailColumn = 4 + titleWidth + 1;
 
@@ -75,9 +82,16 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 	for (const g of groups) {
 		lines.push(g);
 		for (const r of byGroup.get(g)) {
-			const parts = wrapText(r.detail, width, detailColumn);
-			lines.push(`  ${MARKS[r.status] ?? "?"} ${r.title.padEnd(titleWidth)} ${parts[0]}`);
-			for (const p of parts.slice(1)) lines.push("".padEnd(detailColumn) + p);
+			const mark = `  ${MARKS[r.status] ?? "?"} `;
+			const title = r.title.padEnd(titleWidth);
+			if (r.title.length > titleWidth) {
+				lines.push(`${mark}${r.title}`);
+				for (const p of wrapText(r.detail, width, detailColumn)) lines.push("".padEnd(detailColumn) + p);
+			} else {
+				const parts = wrapText(r.detail, width, detailColumn);
+				lines.push(`${mark}${title} ${parts[0]}`);
+				for (const p of parts.slice(1)) lines.push("".padEnd(detailColumn) + p);
+			}
 			// Hints are shown for anything the user can act on, including an ok row
 			// whose detail carries a caveat.
 			if (verbose && r.hint) {

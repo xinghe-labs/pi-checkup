@@ -197,7 +197,10 @@ test("config: an existing backup passes even when the config was edited after it
 
 	const rows = byId(await config.run(buildContext({ agentDir: root })));
 	assert.equal(rows.backups.status, "ok");
-	assert.match(rows.backups.hint ?? "", /settings\.json/);
+	// The stale note lives in the detail so the default report shows it: a hint on
+	// an ok row is only rendered under --verbose, and this is the one caveat a
+	// user needs before their next edit.
+	assert.match(rows.backups.detail, /settings\.json/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -381,4 +384,92 @@ test("CLI: --offline --json emits a well-formed report", () => {
 	assert.ok(report.checks.every((c) => !("fix" in c) && !("fixTarget" in c)));
 	// Offline mode must not have probed the network.
 	assert.ok(report.checks.some((c) => c.id === "providers" && c.status === "skip"));
+});
+
+test("config: an exported but empty variable counts as unset", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { p: { apiKey: "$PI_CHECKUP_EMPTY_VAR" } } });
+	const saved = process.env.PI_CHECKUP_EMPTY_VAR;
+	process.env.PI_CHECKUP_EMPTY_VAR = "";
+	try {
+		const rows = byId(await config.run(buildContext({ agentDir: root })));
+		// An empty string cannot authenticate anything, so it must not read as set.
+		assert.equal(rows.env.status, "warn");
+		assert.match(rows.env.detail, /PI_CHECKUP_EMPTY_VAR/);
+	} finally {
+		if (saved === undefined) delete process.env.PI_CHECKUP_EMPTY_VAR;
+		else process.env.PI_CHECKUP_EMPTY_VAR = saved;
+	}
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: no env references is skipped, not an empty green tick", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { p: { apiKey: "literal-key" } } });
+	const rows = byId(await config.run(buildContext({ agentDir: root })));
+	assert.equal(rows.env.status, "skip");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: in-session duplicates are reported but not offered as a file repair", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:a", "npm:a"] });
+	// A live session supplies settings from the process, not from the file.
+	const pi = { getSettings: () => ({ packages: ["npm:a", "npm:a"] }) };
+	const rows = byId(await config.run(buildContext({ agentDir: root, pi })));
+	// The list the check saw may have come from the running process, so rewriting
+	// the file on disk would edit a copy the report never inspected.
+	assert.equal(rows.duplicates.status, "warn");
+	assert.equal(rows.duplicates.fix, undefined);
+	assert.equal(rows["file:settings.json"].detail, "valid JSON (values read from the running session)");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: hints name a command the caller can actually run", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:a", "npm:a"] });
+	const cli = byId(await config.run(buildContext({ agentDir: root, hasRuntime: false })));
+	assert.match(cli.duplicates.hint, /npx pi-checkup --fix/);
+	const pi = { getSettings: () => ({ packages: ["npm:a", "npm:a"] }) };
+	const live = byId(await config.run(buildContext({ agentDir: root, pi })));
+	assert.match(live.duplicates.hint, /\/checkup fix/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: a cleartext key is reported even in --offline mode", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { p: { baseUrl: "http://api.example.com/v1", apiKey: "sk-live-SECRET" } },
+	});
+	const network = await import("../src/checks/network.js");
+	const rows = await network.run({ offline: true, agentDir: root, modelsFile: path.join(root, "models.json") });
+	const cleartext = rows.find((r) => r.id === "cleartext");
+	// Whether a key would cross the wire in the clear is a property of the config,
+	// not of the probe, so offline mode must still surface it.
+	assert.ok(cleartext, JSON.stringify(rows));
+	assert.equal(cleartext.status, "warn");
+	assert.ok(!JSON.stringify(rows).includes("sk-live-SECRET"));
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: an IPv6 loopback provider does not fail DNS", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { local: { baseUrl: "http://[::1]:11434/v1" } },
+	});
+	const network = await import("../src/checks/network.js");
+	// Not offline: the point is the DNS phase, and the only traffic this can
+	// generate is a refused connection to ::1 on this machine.
+	const rows = await network.run({ offline: false, agentDir: root, modelsFile: path.join(root, "models.json") });
+	// ::1 is loopback: it is deliberately not looked up, so the row must say it
+	// skipped rather than claim the host resolved.
+	const dns = rows.find((r) => r.id === "dns");
+	assert.equal(dns.status, "skip");
+	assert.match(dns.detail, /loopback/);
+	assert.ok(!rows.some((r) => r.status === "fail"));
+	fs.rmSync(root, { recursive: true, force: true });
 });

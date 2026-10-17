@@ -36,14 +36,17 @@ Options
       --json       print the report as JSON
       --offline    skip every network probe
       --fix        apply the safe repairs (requires --yes)
-      --yes        confirm repairs without prompting
+  -y, --yes        confirm repairs without prompting
   -h, --help       show this help
       --version    print the version
 
 Exit codes
-  0  no failed checks
+  0  no failed checks (including after a successful repair)
   1  at least one check failed
-  2  usage error
+  2  usage error, or the run itself crashed
+
+--json and --fix cannot be combined: --json is a single machine-readable
+snapshot, and a repair changes what the snapshot describes.
 
 The registry section needs a running Pi session; use /checkup inside Pi to
 audit loaded tools and commands.`;
@@ -80,6 +83,8 @@ function parseArgs(argv) {
 				throw new Error(`unknown option: ${arg}`);
 		}
 	}
+	// Silently ignoring one of these two would run no repairs and say nothing.
+	if (opts.json && opts.fix) throw new Error("--json cannot be combined with --fix");
 	return opts;
 }
 
@@ -111,13 +116,16 @@ async function main() {
 
 	const report = renderReport(results, {
 		verbose: opts.verbose,
-		hintCommand: "pi-checkup --verbose",
+		// `pi-checkup` alone only resolves after a global install the README does
+		// not require, so the hint names the form that always works.
+		hintCommand: "npx pi-checkup --verbose",
 		// Piped output has no columns; the renderer's default keeps logs stable.
 		width: process.stdout.isTTY ? process.stdout.columns || 80 : 80,
 	});
 	process.stdout.write(`${report}\n`);
 
 	const fixable = results.filter((r) => r.fix && r.fixTarget);
+	let finalResults = results;
 	if (opts.fix) {
 		if (!fixable.length) {
 			process.stdout.write("\nNothing to repair automatically.\n");
@@ -126,10 +134,14 @@ async function main() {
 			for (const f of fixable) process.stdout.write(`  • ${f.title}: ${f.detail}\n`);
 			process.stdout.write("\nRe-run with --fix --yes to apply them. Every file is backed up first.\n");
 		} else {
-			const applied = await applyRepairs(fixable);
+			const applied = await applyRepairs(fixable, { agentDir: ctx.agentDir });
 			process.stdout.write("\nRepairs\n");
 			for (const a of applied) process.stdout.write(`  ${a.ok ? "✓" : "✗"} ${a.message}\n`);
 			process.stdout.write("\nRestart Pi so it picks up the changes.\n");
+			// Re-check: the exit code has to describe the tree as it is now, not as
+			// it was before the repair. Exiting 1 right after fixing the only
+			// failure breaks every `&&` chain that calls this.
+			if (applied.some((a) => a.ok)) finalResults = await runChecks(ctx);
 		}
 	} else if (fixable.length) {
 		process.stdout.write(`\n${fixable.length} finding(s) can be repaired with --fix.\n`);
@@ -137,14 +149,19 @@ async function main() {
 
 	// Discoverability: the CLI cannot audit the registry, and saying so is more
 	// useful than letting the skipped section look like a clean bill of health.
-	process.stdout.write(`\n${renderVerdict(results)}  ·  run /checkup inside Pi for registry checks\n`);
-	return results.some((r) => r.status === "fail") ? 1 : 0;
+	process.stdout.write(`\n${renderVerdict(finalResults)}  ·  run /checkup inside Pi for registry checks\n`);
+	return finalResults.some((r) => r.status === "fail") ? 1 : 0;
 }
 
+// `process.exit()` can truncate a pipe that has not drained, and a --json report
+// on a slow consumer is exactly the payload large enough to hit that. Setting
+// exitCode lets Node flush and exit on its own.
 main().then(
-	(code) => process.exit(code),
+	(code) => {
+		process.exitCode = code;
+	},
 	(e) => {
 		process.stderr.write(`pi-checkup crashed: ${String(e?.stack ?? e)}\n`);
-		process.exit(2);
+		process.exitCode = 2;
 	},
 );
