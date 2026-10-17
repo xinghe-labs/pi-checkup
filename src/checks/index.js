@@ -86,7 +86,12 @@ export async function runChecks(ctx, modules = CHECKS, { timeoutMs = MODULE_TIME
 							title: name.toLowerCase(),
 							status: "fail",
 							detail: `check did not finish within ${Math.round(timeoutMs / 1000)}s`,
-							hint: "Usually a blocked network call. Try --offline, or report this with the check name above.",
+							// The in-session command has no --offline flag, and the timeout is
+							// most often a blocked network call — point the session reader at the
+							// CLI that has the flag instead of at a flag that does nothing here.
+							hint: ctx?.hasRuntime
+								? "Usually a blocked network call. Run `npx pi-checkup --offline` outside the session to confirm, or report this with the check name above."
+								: "Usually a blocked network call. Try --offline, or report this with the check name above.",
 						},
 					]);
 				}, timeoutMs);

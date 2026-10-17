@@ -61,7 +61,10 @@ function danglingRow(dangling, linkCount, entryCount, unreadable = 0) {
 			title: "dangling links",
 			status: "fail",
 			detail: `${dangling.length} broken: ${names(dangling, 6)}`,
-			hint: "Usually a blocked postinstall or a skipped optional native dependency. Reinstall the owning package with install scripts approved.",
+			// Deliberately-declined install scripts are a legitimate state, but the
+			// row stays a failure — the command it names is genuinely broken — so the
+			// way out is named instead of a status downgrade.
+			hint: "Usually a blocked postinstall or a skipped optional native dependency. Reinstall the owning package with install scripts approved, or, if you declined them on purpose, silence the row with PI_CHECKUP_IGNORE=dangling.",
 		};
 	}
 	// Nothing to inspect is not a pass: an empty .bin used to print a green tick
@@ -134,7 +137,7 @@ function names(list, max) {
 	return truncateList(list, max);
 }
 
-export async function run({ settings, agentDir: root, binDir = path.join(root, "npm", "node_modules", ".bin"), env = process.env }) {
+export async function run({ settings, settingsLoaded = true, agentDir: root, binDir = path.join(root, "npm", "node_modules", ".bin"), env = process.env }) {
 	// Computed before the early returns: a package whose bins were never linked is
 	// exactly the state where .bin is missing or thin, and the old early return
 	// reported "no npm packages installed" without ever reading settings.
@@ -307,7 +310,16 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 					hint: "Running the bare name in a shell starts a different program. Call the package binary by full path, or reorder PATH.",
 				}
 			: ownBins.size === 0
-				? { group, id: "shadowed", title: "shadowed names", status: "skip", detail: "no package command declared" }
+				? {
+						group,
+						id: "shadowed",
+						title: "shadowed names",
+						status: "skip",
+						// settings.json that does not parse also arrives here as an empty set.
+						// Saying "no package command declared" asserted a fact about the
+						// config two groups below a row saying the file could not be read.
+						detail: settingsLoaded ? "no package command declared" : "settings.json could not be inspected — no package command list to check",
+					}
 				: resolved === 0
 					? // Nothing resolved, so nothing was compared. "none" here was a green
 						// tick over zero inspected commands, next to a row saying the
@@ -327,7 +339,11 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 			// The file exists — it is just not on PATH — so the fix is the directory,
 			// not a reinstall. Without this the row reads as "something is broken"
 			// with no way to tell what to do about it.
-			hint: `Pi installs package commands into ${binDir} without adding it to PATH. Extensions that call them by full path still work; to use them by name, add that directory to PATH or run them with npx.`,
+			// The file exists — it is just not on PATH — so the fix is the directory,
+			// not a reinstall. Without this the row reads as "something is broken"
+			// with no way to tell what to do about it. The suppression is named here
+			// because this is the one row a healthy install carries for good.
+			hint: `Pi installs package commands into ${binDir} without adding it to PATH. Extensions that call them by full path still work; to use them by name, add that directory to PATH or run them with npx. If this is the state you want, silence the row with PI_CHECKUP_IGNORE=unreachable.`,
 		});
 	}
 

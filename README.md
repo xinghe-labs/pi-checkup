@@ -107,7 +107,7 @@ Both captures below and above come from a real machine, taken with pi-checkup 0.
 
 ## Real output
 
-This is an actual run on a working install, copied out of the TUI at 80 columns — not a mock-up. The two `Network` rows describe the moment it ran; everything else is a property of the install. 20 of 24 checks pass, three are skipped because there is genuinely nothing to look at, and the one warning is a real problem that `pi list` said nothing about:
+This is an actual run on a working install, copied out of the TUI at 80 columns — not a mock-up. The two `Network` rows describe the moment it ran; everything else is a property of the install. 20 of 24 checks pass, three are skipped because there is genuinely nothing to look at, and the one warning is the expected state on this machine — the package commands are installed but their directory is not on `PATH`, which the hint explains and `PI_CHECKUP_IGNORE=unreachable` silences.
 
 ```text
 Registry
@@ -156,10 +156,11 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 
 | Group | Finding | Why it matters |
 |---|---|---|
-| **Registry** | Tool and command collisions | One extension silently stops being reachable; the later registration wins with no error |
+| **Registry** | Live registry | No Pi session — the registry checks need a running process, so the whole section collapses to this one skipped row |
+| | Tool and command collisions | One extension silently stops being reachable; the later registration wins with no error |
 | | Silent packages | Declared an extension but registered no tool or command — either by design or a load failure |
 | | Loaded tools and commands | How many registered, split by extension and builtin, and how many distinct sources they came from |
-| | Attribution | Which package owns each of your tools and commands, by name |
+| | Attribution | Which package owns each of your tools, by name |
 | **Packages** | Package list | Whether `settings.json` could be read at all — a hand-edited file that does not parse is reported as unreadable, not as "no packages" |
 | | Missing directories | In `settings.json` but gone from `node_modules`. A version pin (`npm:name@1.2.3`) is resolved to the directory it installs into, not taken as part of the name |
 | | Version pins | `settings.json` pins an exact version and a different one is installed — the code that runs is not the code that was asked for. Ranges and tags are not compared, because the installer is free to satisfy them |
@@ -179,9 +180,9 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Missing shims | The package declares a `bin` but npm never linked it into `.bin` — usually an install run with `--ignore-scripts` |
 | | Shadowed names | A package's command name resolves to an unrelated program earlier on `PATH`. Skipped when no declared command resolved at all: there is nothing to compare, and a green tick there would sit next to a row saying the commands are missing |
 | | Unreachable bins | A package ships a CLI you cannot invoke by name |
-| **Network** | Endpoint reachability | Probes `<baseUrl>/models` for every provider. `401`/`403` counts as alive — this never validates your key and never spends tokens |
-| | Cleartext auth | A provider on `http://` to another machine with a credential configured — an `apiKey`, a password embedded in the `baseUrl`, or a query string, which cannot be inspected for secrets. The `apiKey` and `baseUrl` credentials are withheld from the probe; a query string is never sent, so that endpoint is reported unprobed. Loopback hosts are exempt |
-| | baseUrl shape | A `baseUrl` that is not a string or an object. A string that is not a URL — including the `localhost:11434/v1` paste with no scheme — is reported as an unhealthy provider instead, because the endpoint is what would have to be probed |
+| **Network** | Endpoint reachability | Probes `<baseUrl>/models` for every provider. `401`/`403` counts as alive — this never validates your key and never spends tokens. An endpoint that answers with something other than life — a refused connection, a rejected certificate, an HTTP error — is a failure, and fails the run; only a probe that was cut off locally by its own timeout stays a warning, because the deadline is this process's, not the endpoint's |
+| | Cleartext auth | A provider on `http://` to another machine with a credential configured — an `apiKey`, a password embedded in the `baseUrl`, a credential-named header value, or a query string, which cannot be inspected for secrets. The `apiKey` and `baseUrl` credentials are withheld from the probe; a query string is never sent, so that endpoint is reported unprobed. Loopback hosts are exempt |
+| | baseUrl shape | A `baseUrl` that is not a string or an object. A string that is not a URL — including the `localhost:11434/v1` paste with no scheme — is reported as an unhealthy provider, and also named in this row, because the endpoint is what would have to be probed |
 | | DNS | Provider hosts that do not resolve, or resolve only to loopback |
 | **Config** | Invalid JSON | With a backup on disk, `/checkup fix` can restore it |
 | | Duplicate package entries | The package loads twice and the second registration can shadow the first |
@@ -231,7 +232,7 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
 
 ## JSON output
 
-`/checkup json` prints the report as one object, delivered as a TUI notification — good for pasting into a bug report. For a pipe, use `npx pi-checkup --json`, which writes the same object to stdout, stamped with the version and platform that produced it. The excerpt below is from `/checkup json` inside a session — 24 entries, because the registry section has something to read there; the CLI emits the same shape with that section marked skipped. Two of the entries, and the summary, are shown here:
+`/checkup json` prints the report as one object, delivered as a TUI notification — good for pasting into a bug report. For a pipe, use `npx pi-checkup --json`, which writes the same object to stdout, stamped with the version and platform that produced it. The excerpt below is from `/checkup json` inside a session — 24 entries, because the registry section has something to read there; in the CLI that section collapses to a single skipped row. Two of the entries, and the summary, are shown here:
 
 ```json
 {
@@ -252,7 +253,7 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
       "title": "unreachable bins",
       "status": "warn",
       "detail": "6 package command(s) not on PATH: pi-web-access-mcp, pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp, pi-lens-analyze",
-      "hint": "Pi installs package commands into /root/.pi/agent/npm/node_modules/.bin without adding it to PATH. Extensions that call them by full path still work; to use them by name, add that directory to PATH or run them with npx."
+      "hint": "Pi installs package commands into /root/.pi/agent/npm/node_modules/.bin without adding it to PATH. Extensions that call them by full path still work; to use them by name, add that directory to PATH or run them with npx. If this is the state you want, silence the row with PI_CHECKUP_IGNORE=unreachable."
     },
     {
       "group": "Config",
@@ -336,7 +337,7 @@ scripts/
 
 Adding a check: export `group` and `run(ctx)`, return an array of `{ group, id, title, status, detail, hint? }`, and add the module to the `CHECKS` array in `src/checks/index.js`.
 
-`ctx` carries everything a check may read — `agentDir`, `settingsFile`, `projectSettingsFile`, `modelsFile`, `binDir`, `settings`, `settingsSource`, `env`, `offline`, `hasRuntime`, `pi`, `cwd` — so no check reads the process environment or a path on its own. Tests point `agentDir` at a temp directory; see `test/checks.test.js`.
+`ctx` carries everything a check may read — `agentDir`, `settingsFile`, `projectSettingsFile`, `modelsFile`, `binDir`, `settings`, `settingsLoaded`, `settingsSource`, `env`, `offline`, `hasRuntime`, `agentDirExplicit`, `pi`, `cwd` — so no check reads the process environment or a path on its own. Tests point `agentDir` at a temp directory; see `test/checks.test.js`.
 
 ## License
 

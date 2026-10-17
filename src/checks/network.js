@@ -34,7 +34,7 @@ function hasCredentialHeader(headers) {
 	);
 }
 
-export async function run({ offline = false, agentDir: root, modelsFile, env = process.env }) {
+export async function run({ offline = false, agentDir: root, modelsFile, env = process.env, hasRuntime = false }) {
 	const results = [];
 	const models = readJson(modelsFile);
 	if (!models.ok) {
@@ -230,8 +230,11 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 	const hosts = new Map();
 	const probes = [];
 	for (const item of planned) {
+		// Drop the name: the hint already prefixes every sentence with the provider,
+		// so re-echoing the detail's own prefix printed "openai: openai: invalid…".
+		const outcome = (status, detail) => ({ name: item.name, status, detail: detail.replace(`${item.name}: `, "") });
 		if (item.invalid !== undefined) {
-			probes.push(Promise.resolve({ name: item.name, status: "fail", detail: `${item.name}: invalid baseUrl ${item.invalid}` }));
+			probes.push(Promise.resolve(outcome("fail", `${item.name}: invalid baseUrl ${item.invalid}`)));
 			continue;
 		}
 		const { name, url, key, userinfo, userinfoError, withheld } = item;
@@ -262,6 +265,11 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 	const outcomes = await Promise.all(probes);
 	const unhealthy = outcomes.filter((o) => o.status === "warn" || o.status === "fail");
 	const unprobed = outcomes.filter((o) => o.status === "skip");
+	// The denominator is the endpoints the probe actually judged. Probes that were
+	// withheld (a query string that would cross the network in the clear, a missing
+	// curl, a request that could not be built) appear in the detail as unprobed —
+	// counting them as judged said "1 of 3 unhealthy" where only two were asked.
+	const probed = outcomes.length - unprobed.length;
 	if (!outcomes.length) {
 		results.push({
 			group,
@@ -288,8 +296,8 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			group,
 			id: "providers",
 			title: "providers",
-			status: "ok",
-			detail: `${outcomes.length} endpoint(s) reachable`,
+		status: "ok",
+			detail: `${probed} endpoint(s) reachable`,
 		});
 	} else {
 		results.push({
@@ -297,7 +305,7 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			id: "providers",
 			title: "providers",
 			status: unhealthy.some((o) => o.status === "fail") ? "fail" : "warn",
-			detail: `${unhealthy.length} of ${outcomes.length} unhealthy: ${truncateList(unhealthy.map((o) => o.name), 6)}`,
+			detail: `${unhealthy.length} of ${probed} unhealthy: ${truncateList(unhealthy.map((o) => o.name), 6)}`,
 			// An outcome that knows why it failed brings its own advice; the generic
 			// sentence is only for the ones that do not (a refused connection, a
 			// timeout) and for the ones that sit next to them.
@@ -361,7 +369,11 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			title: "dns",
 			status: anyUnresolved ? "fail" : "warn",
 			detail: dnsProblems.map((p) => p.detail).join("; "),
-			hint: "Fix DNS or use a proxy, or pass --offline to skip every network check. A hosts-file override is usually the fastest repair.",
+			// The in-session command has no --offline flag — naming a flag the reader
+			// cannot pass made the hint a dead end exactly when Pi would not boot.
+			hint: hasRuntime
+				? "Fix DNS or use a proxy. To skip every network check, run `npx pi-checkup --offline` outside the session. A hosts-file override is usually the fastest repair."
+				: "Fix DNS or use a proxy, or pass --offline to skip every network check. A hosts-file override is usually the fastest repair.",
 		});
 	} else if (!dnsTargets.length) {
 		results.push({
@@ -436,7 +448,14 @@ async function probeEndpoint(url, { headers, proxy }) {
 		// 401/403 means the endpoint is up and merely disagrees about auth, which
 		// is a configuration problem, not a reachability problem.
 		const alive = res.ok && (res.status === 200 || res.status === 401 || res.status === 403);
-		return { status: alive ? "ok" : "warn", detail: describeProbe(url, res, alive), hint: probeHint(res) };
+		// A refused connection, a rejected certificate, an HTTP 5xx: the endpoint was
+		// asked and answered with something other than life. That is the finding this
+		// check exists to report, and reporting it as a warning exited 0 — CI and
+		// `npx pi-checkup && start-pi` sailed past the one row that said unhealthy.
+		// Only a local timeout stays a warning: the deadline is this process's, and
+		// the detail already refuses to call the endpoint unreachable.
+		const failed = !alive && !res.aborted && !res.status;
+		return { status: alive ? "ok" : failed ? "fail" : "warn", detail: describeProbe(url, res, alive), hint: probeHint(res) };
 	}
 	const res = await curlProbe(url.toString(), { proxy, headers });
 	if (res.setupFailed) {
@@ -461,12 +480,18 @@ async function probeEndpoint(url, { headers, proxy }) {
 	const through = `through ${redactProxy(proxy)}`;
 	if (directAlive) {
 		return {
+			// A config problem either way (the proxy path is the one Pi's own requests
+			// do not take), and the detail says so — not a confirmed-dead endpoint.
 			status: "warn",
 			detail: `${redactUrl(url.toString())} answered HTTP ${direct.status} directly but not ${through} (${scrubCurlError(res.error, proxy) || `HTTP ${code}`}) — Pi's own requests ignore https_proxy`,
 		};
 	}
+	// Both paths failed. curl got a definitive answer (a refused connection, a
+	// rejected certificate, an HTTP error status) — the endpoint did not answer,
+	// which is the finding this check exists to report.
+	const failed = Boolean(res.code) || !/no response/.test(String(res.error ?? ""));
 	return {
-		status: "warn",
+		status: failed ? "fail" : "warn",
 		detail: `${redactUrl(url.toString())} did not answer ${through}${code ? ` (HTTP ${code})` : ""}; ${scrubCurlError(res.error, proxy) || "no response"}${direct.status ? ` — and HTTP ${direct.status} directly` : ""}`,
 	};
 }

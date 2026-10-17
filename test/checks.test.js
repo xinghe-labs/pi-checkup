@@ -864,6 +864,19 @@ test("binaries: no command resolved on PATH is not a clean shadowing result", as
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("binaries: an unreadable settings file is not reported as \"no command declared\"", async () => {
+	// settings.json that does not parse reaches declaredBins() as null, and the
+	// old wording asserted the config declared nothing — two groups below a row
+	// saying the file could not be read.
+	const root = tmpRoot();
+	fs.mkdirSync(path.join(root, "npm", "node_modules", ".bin"), { recursive: true });
+	fs.writeFileSync(path.join(root, "npm", "node_modules", ".bin", "x"), "#!/bin/sh\n");
+	const rows = byId(await binaries.run(buildContext({ agentDir: root }))); // no settings file written
+	assert.equal(rows.shadowed.status, "skip");
+	assert.match(rows.shadowed.detail, /could not be inspected/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("binaries: a truncated list says how many names it left out", async () => {
 	// Six names printed under "8 package command(s)" reads as a contradiction.
 	const root = tmpRoot();
@@ -1202,7 +1215,11 @@ test("network: an IPv6 loopback provider does not fail DNS", async () => {
 	const dns = rows.find((r) => r.id === "dns");
 	assert.equal(dns.status, "skip");
 	assert.match(dns.detail, /loopback/);
-	assert.ok(!rows.some((r) => r.status === "fail"));
+	// The probe itself may fail — a refused connection to ::1 is a real answer,
+	// and since the refused-connection fix it is reported as one — but the DNS
+	// row must not join it: inventing a resolution failure for a host that was
+	// never looked up was the bug this test closes.
+	assert.ok(!rows.some((r) => r.id === "dns" && r.status === "fail"));
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -1603,6 +1620,23 @@ test("network: a header value outside Latin-1 is refused, not blamed on the endp
 	assert.match(rows.providers.hint, /cannot be sent as an HTTP header/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("network: a refused connection is a failure, not a warning", async () => {
+	// Port 1 on loopback is reserved and refuses immediately. The endpoint was
+	// asked and answered "no" — a warning there exited 0, so CI and
+	// `npx pi-checkup && start-pi` sailed past the one row that said unhealthy.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { down: { baseUrl: "http://127.0.0.1:1/v1", apiKey: "k" } },
+	});
+	const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
+	assert.equal(rows.providers.status, "fail");
+	assert.match(rows.providers.detail, /1 of 1 unhealthy: down/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+// --- regressions found in review -----------------------------------------
 
 test("registry: an error that quotes a token is scrubbed before it is printed", async () => {
 	const root = tmpRoot();
