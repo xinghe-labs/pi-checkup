@@ -60,11 +60,19 @@ export async function run({
 			// the same way in every other module. An absent optional file is that,
 			// not a pass: reporting it as ok made the same absence read as `ok` here
 			// and `skip` in packages.js for no reason a reader could recover.
-			if (required) {
-				results.push(row(`file:${label}`, label, "fail", `${file} not found`, { hint: "Run `pi` once to generate it." }));
-			} else {
-				results.push(row(`file:${label}`, label, "skip", "none"));
-			}
+			//
+			// A missing settings.json is not a failure either. Pi boots with
+			// built-in defaults and writes the file the first time you change a
+			// setting, so failing here turned a fresh install — or a container
+			// running `npx pi-checkup` before its first prompt — red for a state
+			// that works.
+			results.push(
+				required
+					? row(`file:${label}`, label, "skip", `${file} not found — Pi is running on defaults`, {
+							hint: "Pi writes this file the first time you change a setting.",
+						})
+					: row(`file:${label}`, label, "skip", "none"),
+			);
 			continue;
 		}
 		const parsed = readJson(file);
@@ -151,7 +159,15 @@ export async function run({
 	// --- duplicate package entries -----------------------------------------
 	// Two identical sources do not fail loudly; the package just loads twice and
 	// the second registration can shadow the first.
-	if (Array.isArray(settings?.packages)) {
+	const packageList = settings?.packages;
+	if (!Array.isArray(packageList)) {
+		// A row that disappears reads as "fine" to anyone counting rows, so the
+		// absence of something to compare is stated rather than implied.
+		let why = "settings.json `packages` is not a list";
+		if (settings === undefined || settings === null) why = "settings.json could not be inspected";
+		else if (packageList === undefined) why = "no package list in settings.json";
+		results.push(row("duplicates", "duplicate packages", "skip", why));
+	} else {
 		// Two entries for one source are not always the same entry twice:
 		// `"npm:a"` next to `{"source": "npm:a", "enabled": false}` says something
 		// the plain string does not. The repair only drops byte-identical repeats,
@@ -200,7 +216,16 @@ export async function run({
 	// --- environment references --------------------------------------------
 	// Only the credential fields that Pi interpolates, never the raw file text.
 	const models = readJson(modelsFile);
-	if (models.ok) {
+	if (!models.ok) {
+		results.push(
+			row(
+				"env",
+				"env references",
+				"skip",
+				models.missing ? "models.json is missing — no credentials to inspect" : `models.json could not be inspected: ${models.error}`,
+			),
+		);
+	} else {
 		const missing = new Set();
 		let references = 0;
 		for (const value of interpolatedFields(models.data)) {
@@ -210,7 +235,9 @@ export async function run({
 				references++;
 				// An exported-but-empty variable is not usable as a credential, so
 				// `FOO=""` counts as unset rather than as set.
-				if (!env[name]) missing.add(name);
+				// Object.hasOwn, not a truthiness read: `"${constructor}"` resolved
+				// through the prototype chain and was reported as set.
+				if (!Object.hasOwn(env, name) || !env[name]) missing.add(name);
 			}
 		}
 		if (!references) {

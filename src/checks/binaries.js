@@ -7,7 +7,7 @@
 //      PATH, so the name resolves to something else entirely.
 import path from "node:path";
 import fs from "node:fs";
-import { exists, isMissing, normalizePath, readJson, resolvePackageDir, sameCommand, sourceOf, whichAll } from "../util.js";
+import { exists, isMissing, readJson, resolvePackageDir, sameCommand, sourceOf, whichAll } from "../util.js";
 
 export const group = "Binaries";
 
@@ -120,6 +120,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 
 	// --- dangling symlinks -------------------------------------------------
 	const dangling = [];
+	const unreadableLinks = [];
 	const staging = [];
 	const danglingStaging = [];
 	for (const entry of entries) {
@@ -130,19 +131,35 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 		} catch {
 			continue;
 		}
-		const broken = isLink && !exists(full);
+		if (!isLink) continue;
+		// ENOENT proves the target is gone. EACCES or ELOOP proves only that this
+		// process could not follow it, and reporting those as "broken: reinstall the
+		// package" blamed the package for a permissions problem.
+		const broken = isMissing(full);
+		const unreadable = !broken && !exists(full);
 		if (isStagingArtifact(entry)) {
 			staging.push(entry);
 			if (broken) danglingStaging.push(entry);
 			continue;
 		}
 		if (broken) dangling.push(entry);
+		else if (unreadable) unreadableLinks.push(entry);
 	}
 
 	// Real breakage stays a failure; a half-finished install is reported as its
 	// own thing, because the fix is "let the install finish", not "reinstall".
 	const stagingFindings = stagingRow(staging, danglingStaging);
 	const results = [danglingRow(dangling, entries.length - staging.length), ...(stagingFindings ? [stagingFindings] : [])];
+	if (unreadableLinks.length) {
+		results.push({
+			group,
+			id: "unreadable-links",
+			title: "unreadable links",
+			status: "warn",
+			detail: `${unreadableLinks.length} link(s) could not be resolved: ${unreadableLinks.slice(0, 6).join(", ")}`,
+			hint: "Not proven broken — the target may exist but be unreadable for this user. Check ownership of the package directory.",
+		});
+	}
 
 	// --- declared but never linked -----------------------------------------
 	// A package can declare a `bin` and still have no shim, because npm skips

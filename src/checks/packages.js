@@ -7,7 +7,7 @@
 // never committed.
 import path from "node:path";
 import fs from "node:fs";
-import { globExists, makeRow, readJson, redactSource, resolvePackageDir, sourceOf } from "../util.js";
+import { exists, globExists, makeRow, readJson, redactSource, resolvePackageDir, sourceOf } from "../util.js";
 
 export const group = "Packages";
 
@@ -28,20 +28,25 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		// packages in settings.json" then asserted something the check never read,
 		// and pointed the user at the wrong problem.
 		const unreadable = settings === undefined || settings === null;
+		// A missing settings.json is not a fault: Pi boots on defaults and writes
+		// the file the first time a setting changes. A file that exists but did not
+		// parse is a fault, and Config already says so.
+		const absent = Boolean(settingsFile) && !exists(settingsFile);
 		const where = settingsSource === "runtime" ? "the running session" : "settings.json";
 		let detail = `no packages in ${where}`;
 		// "could not be inspected", not "could not be read": an oversized file was
 		// read fine, it just was not parsed.
-		if (unreadable) detail = "settings.json could not be inspected — no package list to check";
+		if (absent) detail = "settings.json not found — no package list to check";
+		else if (unreadable) detail = "settings.json could not be inspected — no package list to check";
 		else if (malformed) detail = `${where} \`packages\` is not a list`;
 		return [
 			{
 				group,
 				id: "installed",
 				title: "installed",
-				status: malformed || unreadable ? "warn" : "skip",
+				status: malformed || (unreadable && !absent) ? "warn" : "skip",
 				detail,
-				hint: unreadable ? "The Config group reports the parse error." : undefined,
+				hint: unreadable && !absent ? "The Config group reports the parse error." : undefined,
 			},
 		];
 	}

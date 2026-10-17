@@ -6,8 +6,10 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+// `import.meta.dirname` needs Node 20.11; `engines` promises 20.0.
+const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const DIRS = ["src", "bin", "test", "scripts"];
 
 function walk(dir) {

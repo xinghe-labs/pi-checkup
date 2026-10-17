@@ -137,7 +137,7 @@ Runtime
 Run `/checkup verbose` to show what to do about each finding.
 ```
 
-The `attribution` row is the part no other tool gives you: which package owns which tools, counted from the live registry rather than from your config. Both blocks above share the same 23-column detail column, because `duplicate packages` and `command collisions` are both 18 characters wide and the renderer sizes the column to the longest title in the report it is printing.
+The `attribution` row is the part no other tool gives you: which package owns which tools, counted from the live registry rather than from your config. Both blocks above share the same 23-column detail column, because `duplicate packages` and `command collisions` are both 18 characters wide and the renderer sizes the column to the longest title in the report it is printing, up to a 22-character cap after which the detail moves to its own line.
 
 ## What it checks
 
@@ -152,7 +152,11 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Missing entry files | The manifest points at a build output that was never shipped |
 | | Unverifiable sources | `git:` and `https:` packages, which Pi resolves internally and no static check can follow |
 | | Malformed entries | A `packages` entry that is not a source string — `null`, a number, an object without `source` |
-| **Binaries** | Dangling symlinks | Blocked `postinstall`, or an optional native dependency skipped for this platform |
+| | Unreadable directories | A package directory that exists but cannot be listed, which is a permission problem rather than a missing install |
+| | Manifest shape | A `package.json` that parses but is not an object, so nothing in it can be trusted |
+| **Binaries** | Bin directory | Whether `.bin` could be listed at all — no packages installed is a `skip`, an unreadable directory is a warning |
+| | Dangling symlinks | Blocked `postinstall`, or an optional native dependency skipped for this platform |
+| | Unreadable links | A link that exists but cannot be followed (permissions, a loop) — reported, not called broken |
 | | Install leftovers | `.<name>-<random>` staging links in `.bin`: an install is running right now, or was interrupted. Its own finding, not a broken package |
 | | Missing shims | The package declares a `bin` but npm never linked it into `.bin` — usually an install run with `--ignore-scripts` |
 | | Shadowed names | A package's command name resolves to an unrelated program earlier on `PATH` |
@@ -166,6 +170,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Unset env references | `$NAME` / `${NAME}` in the `models.json` fields Pi actually interpolates (`apiKey`, header values) with nothing in the environment |
 | | Backups | Whether a broken config could be recovered at all |
 | **Runtime** | Node version, launcher, disk, proxy | The host conditions Pi itself needs |
+| **Any** | Crashed or timed-out module | A check that threw or ran past 30s is reported as a failure naming the module, and every other section still prints |
 
 ## `/checkup fix`
 
@@ -178,7 +183,7 @@ Two more repairs rewrite `settings.json`, so only the CLI offers them:
 2. **Collapse duplicate `packages` entries** in `settings.json`.
 3. **Prune `packages` entries whose directory is gone** — the ones a reinstall did not bring back. Sources resolved by Pi itself (`git:`, `https:`) are never touched.
 
-Inside a session Pi hands checkup the settings from the *running process*, not the file on disk, and checkup will not rewrite a file it never read — so `/checkup fix` in-session offers repair 1 only. Stop Pi and run the CLI for the other two:
+Inside a session Pi hands checkup the settings from the *running process*, not the file on disk, and checkup will not rewrite a file it never read — so `/checkup fix` in-session offers repair 1, plus the other two only when Pi could not supply the settings and checkup fell back to reading the file. Stop Pi and run the CLI to be sure:
 
 ```bash
 npx pi-checkup --fix --yes
@@ -207,7 +212,7 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
 
 ## JSON output
 
-`/checkup json` prints the report as one object for scripts and CI. Two of the 24 entries are shown here:
+`/checkup json` prints the report as one object, delivered as a TUI notification — good for pasting into a bug report. For a pipe, use `npx pi-checkup --json`, which writes the same object to stdout. Two of the 24 entries are shown here:
 
 ```json
 {
@@ -233,7 +238,6 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
 ```
 
 The `checks` array always has one entry per row of the text report, in the same order.
-```
 
 Exit-worthy statuses are `fail`; `warn` means something is degraded but working. Repair metadata is stripped from the JSON payload.
 
@@ -243,8 +247,8 @@ Exit-worthy statuses are `fail`; `warn` means something is degraded but working.
 - **No secrets printed, no keys validated.** A provider probe sends whatever auth header your config already defines and ignores the response body. A key on a plain-`http://` endpoint that is not on your own machine is never sent. A proxy URL is always shown as scheme, host and port, and a `git:` source carrying a token is scrubbed the same way — corporate proxies and private repos both keep credentials in the URL, and both are the kind of string that ends up in a CI log. A `baseUrl` with credentials in it is moved into a header before the probe, so no error message can quote it back.
 - **Non-blocking.** Every check runs concurrently, and every outbound call has its own timeout — 8s for a probe, 4s for DNS, 3s for a TCP connect — under a 30s per-module backstop. A hung endpoint costs 8 seconds, not the whole command.
 - **A crashing check is a finding, not a crash.** If a check module throws, the report says which one, marks it failed, and still shows everything else.
-- **A check with nothing to inspect says so.** `skip` always means "there was nothing to inspect", in every module — an absent optional config file, an empty `.bin`, a provider list with no host to resolve. Zero packages present reports `skip`, never a green tick over nothing, and the verdict counts them: `✓ 3 ok, 2 skipped` rather than a bare "all clear".
-- **Cross-platform.** Node built-ins only. `PATH` is resolved in-process against `PATHEXT` on Windows and the executable bit on POSIX, so a minimal container without `which` still works; `curl` vs `NUL`, symlinked package stores, and path separators are handled. Checks that cannot run are marked skipped rather than failed.
+- **A check with nothing to inspect says so.** `skip` means nothing was inspected — an absent optional config file, an empty `.bin`, a provider list with no host to resolve, or a row you suppressed with `PI_CHECKUP_IGNORE` (whose detail says what it replaced). Zero packages present reports `skip`, never a green tick over nothing, and the verdict counts them: `✓ 3 ok, 2 skipped` rather than a bare "all clear".
+- **Cross-platform.** Node built-ins only. `PATH` is resolved in-process against `PATHEXT` on Windows and the executable bit on POSIX, so a minimal container without `which` still works; `/dev/null` vs `NUL` for curl output, symlinked package stores, and path separators are handled. Checks that cannot run are marked skipped rather than failed.
 - **Zero dependencies.** Nothing to audit, nothing to break on a Pi upgrade.
 
 ## Known limitations

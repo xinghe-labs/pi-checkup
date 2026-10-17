@@ -12,6 +12,8 @@ import * as network from "./network.js";
 import * as config from "./config.js";
 import * as runtime from "./runtime.js";
 
+import { scrubCredentials } from "../util.js";
+
 export const CHECKS = [registry, packages, binaries, network, config, runtime];
 
 // A safety net, not the primary bound: every outbound call already has its own
@@ -23,12 +25,16 @@ export const MODULE_TIMEOUT_MS = 30_000;
 /**
  * Parse an ignore list: `PI_CHECKUP_IGNORE="unreachable,packages:entries"`.
  * Entries match a row's id, its `Group:id` form, or its title.
+ *
+ * Split on commas only: a title is a phrase (`shadowed names`), so treating
+ * whitespace as a separator silently turned every multi-word title into two
+ * entries that match nothing.
  */
 export function parseIgnore(raw) {
 	return new Set(
 		String(raw ?? "")
-			.split(/[,\s]+/)
-			.map((s) => s.trim())
+			.split(",")
+			.map((s) => s.trim().toLowerCase())
 			.filter(Boolean),
 	);
 }
@@ -45,7 +51,10 @@ export function parseIgnore(raw) {
 export function applyIgnore(rows, ignore) {
 	if (!ignore?.size) return rows;
 	return rows.map((r) => {
-		const keys = [r.id, `${r.group}:${r.id}`, r.title];
+		// Lower-cased on both sides: the group in a report is "Binaries" while a
+		// user types `binaries:unreachable`, and a suppression that silently does
+		// nothing is worse than no suppression.
+		const keys = [r.id, `${r.group}:${r.id}`, r.title].map((k) => (k ? k.toLowerCase() : k));
 		if (!keys.some((k) => k && ignore.has(k))) return r;
 		const { fix, fixTarget, ...rest } = r;
 		return {
@@ -97,7 +106,9 @@ export async function runChecks(ctx, modules = CHECKS, { timeoutMs = MODULE_TIME
 								id: `crash:${name}`,
 								title: name.toLowerCase(),
 								status: "fail",
-								detail: `check crashed: ${String(e?.message ?? e)}`,
+								// Scrubbed like every other error string: a check that throws
+								// while handling a credentialed URL must not print it.
+								detail: `check crashed: ${scrubCredentials(String(e?.message ?? e))}`,
 								hint: "This is a bug in pi-checkup, not necessarily in your setup. Please report it with the message above.",
 							},
 						];
@@ -109,8 +120,11 @@ export async function runChecks(ctx, modules = CHECKS, { timeoutMs = MODULE_TIME
 			}
 		}),
 	);
+	// ctx.env, not process.env: every other input a check sees goes through the
+	// context seam, and reading one of them straight from the process made the
+	// ignore list impossible to test without mutating the real environment.
 	return applyIgnore(
 		settled.flat(),
-		ignore ?? parseIgnore(process.env.PI_CHECKUP_IGNORE),
+		ignore ?? parseIgnore(ctx.env?.PI_CHECKUP_IGNORE),
 	);
 }

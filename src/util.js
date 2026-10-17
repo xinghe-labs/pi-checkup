@@ -399,7 +399,10 @@ export async function curlProbe(url, { proxy, headers = {}, maxTime = 6, timeout
 		// Reading only `ok` turned a dead proxy into "skipped, tool unavailable".
 		return { missing: res.missing === true, code: (res.out ?? "").trim(), error: res.ok ? "" : String(res.err ?? "").trim() };
 	} catch (e) {
-		return { missing: false, code: "", error: String(e?.message ?? e) };
+		// The request never left the machine. Consumers check this first, so a
+		// failure to create the config file is reported as "could not be set up"
+		// rather than as an endpoint that did not answer.
+		return { setupFailed: true, missing: false, code: "", error: String(e?.message ?? e) };
 	} finally {
 		if (dir) {
 			try {
@@ -429,8 +432,13 @@ export function redactUrl(raw) {
 	if (!text) return "(empty)";
 	if (!text.includes("://") && !text.startsWith("//")) {
 		// Not a URL. Strip anything that looks like a credential anyway rather than
-		// echoing the raw paste back at the user.
-		return scrubCredentials(text);
+		// echoing the raw paste back at the user — and only echo what is shaped
+		// like a host at all. `sk-ant-api03-…` pasted into baseUrl by mistake has
+		// no "." "/" or ":" in it, so the whole string was a secret the report
+		// reprinted into the terminal and the JSON.
+		const bare = scrubCredentials(text).split(/[?#]/)[0];
+		const hostShaped = /[./:]/.test(bare) && /^[a-z0-9._\-[\]]+(:\d+)?(\/[\w.\-/]*)?$/i.test(bare);
+		return hostShaped ? bare : "(unparsable value)";
 	}
 	try {
 		const url = new URL(text);
@@ -476,7 +484,17 @@ export function redactProxy(raw) {
 
 	// Everything before the last "@" is a credential; everything after it is the
 	// proxy the user needs to recognise.
-	return text.slice(text.lastIndexOf("@") + 1).replace(/^[a-z0-9+.-]+:\/\//i, "") || "(configured)";
+	const at = text.lastIndexOf("@");
+	if (at !== -1) return text.slice(at + 1).replace(/^[a-z0-9+.-]+:\/\//i, "") || "(configured)";
+
+	// No "@" at all: `alice:s3cr3t` and `http://alice:s3cr3t` are a user and a
+	// password with no host, which the URL parser rejects. The shape itself is
+	// the credential, so nothing of it can be shown. A bare `host:port` is safe.
+	if (/^[a-z0-9._\-[\]]+:\d+$/i.test(text)) return text;
+	// No "@" and no colon: a bare word cannot be a user and a password, so it is
+	// safe to echo and useful to see.
+	if (!text.includes(":")) return text;
+	return "(configured)";
 }
 
 /**

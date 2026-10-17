@@ -73,7 +73,10 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					group,
 					id: "tools",
 					title: "tools",
-					status: "ok",
+					// A readable but empty registry is not a pass: the session may have
+					// started with tools disabled, and "0 registered across 0 sources"
+					// with a tick reads like everything is accounted for.
+					status: tools.length ? "ok" : "skip",
 					detail: `${tools.length} registered (${tools.length - builtinTools} extension, ${builtinTools} builtin) across ${toolsByOwner.size} sources`,
 				}
 			: {
@@ -134,9 +137,19 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 	// --- collisions --------------------------------------------------------
 	// A collision means one extension silently stops being reachable: the later
 	// registration wins and the earlier tool or command is gone without an error.
+	// Without a readable registry every list is empty, so "no collisions" would be
+	// a green row over a registry that was never read.
 	const duplicateTools = findDuplicates(tools);
 	results.push(
-		duplicateTools.length
+		!toolsResult.ok
+			? {
+					group,
+					id: "tool-collisions",
+					title: "tool collisions",
+					status: "skip",
+					detail: "the tool registry could not be read",
+				}
+			: duplicateTools.length
 			? {
 					group,
 					id: "tool-collisions",
@@ -150,7 +163,15 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 
 	const duplicateCommands = findDuplicates(commands);
 	results.push(
-		duplicateCommands.length
+		!commandsResult.ok
+			? {
+					group,
+					id: "command-collisions",
+					title: "command collisions",
+					status: "skip",
+					detail: "the command registry could not be read",
+				}
+			: duplicateCommands.length
 			? {
 					group,
 					id: "command-collisions",
@@ -217,15 +238,22 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 }
 
 function findDuplicates(items) {
+	// Keyed by registration, not by owner label: two packages that register the
+	// same name but carry no sourceInfo.path both resolve to "unknown", and
+	// de-duplicating by label collapsed them into a single owner — the collision
+	// then rendered as "none".
 	const byName = new Map();
+	let unattributed = 0;
 	for (const item of items) {
 		const name = item?.name;
 		if (!name) continue;
-		const owner = ownerOf(item?.sourceInfo?.path);
-		if (!byName.has(name)) byName.set(name, new Set());
-		byName.get(name).add(owner);
+		const sourcePath = item?.sourceInfo?.path;
+		const key = typeof sourcePath === "string" && sourcePath ? sourcePath : `unknown#${unattributed++}`;
+		const owner = ownerOf(sourcePath);
+		if (!byName.has(name)) byName.set(name, new Map());
+		byName.get(name).set(key, owner);
 	}
-	return [...byName].filter(([, owners]) => owners.size > 1).map(([name, owners]) => [name, [...owners]]);
+	return [...byName].filter(([, owners]) => owners.size > 1).map(([name, owners]) => [name, [...owners.values()]]);
 }
 
 /**

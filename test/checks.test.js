@@ -41,6 +41,16 @@ function installPkg(root, name, manifest, extraFiles = []) {
 
 const byId = (rows) => Object.fromEntries(rows.map((r) => [r.id, r]));
 
+/** Proxied probes shell out to curl, so tests that need one must skip without it. */
+function hasCurl() {
+	try {
+		execFileSync("curl", ["--version"], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 // --- packages ------------------------------------------------------------
 
 test("packages: a complete install passes all three rows", async () => {
@@ -415,6 +425,35 @@ test("registry: a package owned by a nested path still counts as loaded", async 
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("registry: an unreadable tool registry does not report zero collisions", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const pi = {
+		getSettings: () => ({ packages: [] }),
+		getAllTools: () => {
+			throw new Error("getAllTools is not a function");
+		},
+		getCommands: () => [],
+		getMcpServers: () => [],
+	};
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
+	assert.equal(rows.tools.status, "warn");
+	assert.equal(rows["tool-collisions"].status, "skip");
+	assert.match(rows["tool-collisions"].detail, /could not be read/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: two unattributed registrations of one name are a collision", async () => {
+	// Both resolve to owner "unknown"; de-duplicating by label hid the collision.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const pi = fakePi({ packages: [] }, [{ name: "dup" }, { name: "dup" }]);
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
+	assert.equal(rows["tool-collisions"].status, "fail");
+	assert.match(rows["tool-collisions"].detail, /dup claimed by/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("registry: a package declaring an empty extensions list is not silent", async () => {
 	const root = tmpRoot();
 	const dir = installPkg(root, "nothing", { pi: { extensions: [] } });
@@ -549,18 +588,20 @@ test("network: a non-string baseUrl is reported instead of denied", async () => 
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("network: a configured proxy is used, and its password is not printed", async () => {
+test("network: a configured proxy is used, and its password is not printed", { skip: hasCurl() ? false : "curl is not installed" }, async () => {
 	// Node's fetch ignores https_proxy entirely, so the probe has to go through
-	// curl. The point of this test is the credential, not the HTTP code.
+	// curl. The two ports differ on purpose: the proxy's port appearing in the
+	// row is what proves the proxy was used, and the password must not appear
+	// even though curl's own error text mentions the proxy.
 	const root = tmpRoot();
 	writeJson(path.join(root, "settings.json"), { packages: [] });
 	writeJson(path.join(root, "models.json"), { providers: { gw: { baseUrl: "http://127.0.0.1:9/v1" } } });
-	const ctx = buildContext({ agentDir: root, env: { ...process.env, https_proxy: "http://alice:sekrit@127.0.0.1:9" } });
+	const ctx = buildContext({ agentDir: root, env: { ...process.env, https_proxy: "http://alice:sekrit@127.0.0.1:1", all_proxy: "" } });
 	const rows = byId(await network.run(ctx));
-	const text = JSON.stringify(rows);
+	const text = JSON.stringify(rows.providers);
 	assert.doesNotMatch(text, /sekrit/);
 	assert.doesNotMatch(text, /alice/);
-	assert.match(JSON.stringify(rows.providers), /127\.0\.0\.1:9/);
+	assert.match(text, /127\.0\.0\.1:1/, "the proxy address is reported, so the row is actionable");
 	assert.notEqual(rows.providers.status, "ok", "a dead proxy cannot make an endpoint look healthy");
 	fs.rmSync(root, { recursive: true, force: true });
 });
@@ -746,6 +787,21 @@ test("PI_CHECKUP_IGNORE downgrades a matching row to skip and says so", async ()
 	assert.deepEqual(untouched.map((r) => r.status), ["warn", "warn"]);
 });
 
+test("PI_CHECKUP_IGNORE is case-insensitive and keeps multi-word titles whole", async () => {
+	const { parseIgnore, applyIgnore } = await import("../src/checks/index.js");
+	const rows = [
+		{ group: "Binaries", id: "shadowed", title: "shadowed names", status: "warn", detail: "d" },
+		{ group: "Binaries", id: "unreachable", title: "unreachable bins", status: "warn", detail: "d" },
+	];
+	// The group is "Binaries" in the report and `binaries:` is what a user types.
+	assert.equal(applyIgnore(rows, parseIgnore("binaries:shadowed"))[0].status, "skip");
+	// A title with a space in it used to be split into two entries that matched
+	// nothing, so the row the README documents suppressing stayed a warning.
+	assert.equal(applyIgnore(rows, parseIgnore("shadowed names"))[0].status, "skip");
+	assert.equal(applyIgnore(rows, parseIgnore("Shadowed Names"))[0].status, "skip");
+	assert.deepEqual(parseIgnore(" shadowed names , "), new Set(["shadowed names"]));
+});
+
 test("config: an exported but empty variable counts as unset", async () => {
 	const root = tmpRoot();
 	writeJson(path.join(root, "settings.json"), { packages: [] });
@@ -756,6 +812,16 @@ test("config: an exported but empty variable counts as unset", async () => {
 	const rows = byId(await config.run(buildContext({ agentDir: root, env })));
 	assert.equal(rows.env.status, "warn");
 	assert.match(rows.env.detail, /PI_CHECKUP_EMPTY_VAR/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: an inherited property name is not a set variable", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { p: { apiKey: "${constructor}" } } });
+	const rows = byId(await config.run(buildContext({ agentDir: root, env: {} })));
+	assert.equal(rows.env.status, "warn");
+	assert.match(rows.env.detail, /constructor/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 

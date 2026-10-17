@@ -3,7 +3,6 @@
 // Deliberately provider-agnostic: every OpenAI-compatible provider exposes
 // /models, and a 401/403 still proves the host answered. No vendor SDK, no
 // API key validation (this package never spends your tokens).
-import path from "node:path";
 import {
 	bareHost,
 	curlProbe,
@@ -239,7 +238,18 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 	const dnsChecks = await Promise.all(
 		dnsTargets.map(async ([host, provider]) => {
 			const res = await resolveHost(host);
-			if (!res.ok) return { host, provider, status: "fail", detail: `${host} does not resolve (${res.error})` };
+			if (!res.ok) {
+				// A deadline is this process giving up, not the resolver answering.
+				// Reporting it as "does not resolve" failed a host that resolves fine
+				// on a slow corporate resolver.
+				const timedOut = /timeout/i.test(String(res.error));
+				return {
+					host,
+					provider,
+					status: timedOut ? "warn" : "fail",
+					detail: timedOut ? `${host} resolution timed out — not proven broken` : `${host} does not resolve (${res.error})`,
+				};
+			}
 			const loopback = res.addresses.every((a) => a === "::1" || a.startsWith("127."));
 			if (loopback) {
 				return {
@@ -312,11 +322,25 @@ async function probeEndpoint(url, { headers, proxy }) {
 	}
 	const code = Number(res.code);
 	const alive = statusIsAlive(code);
+	if (alive) {
+		return { status: "ok", detail: `${redactUrl(url.toString())} answered ${code} through ${redactProxy(proxy)}` };
+	}
+	// The proxy path failed. Node's fetch ignores `https_proxy`, so Pi's own
+	// requests take the direct path — and a run inside Pi would then call the same
+	// endpoint reachable while the CLI called it dead. Ask the other path before
+	// blaming the endpoint.
+	const direct = await timedFetch(url.toString(), { headers });
+	const directAlive = direct.ok && statusIsAlive(direct.status);
+	const through = `through ${redactProxy(proxy)}`;
+	if (directAlive) {
+		return {
+			status: "warn",
+			detail: `${redactUrl(url.toString())} answered HTTP ${direct.status} directly but not ${through} (${scrubCredentials(res.error) || `HTTP ${code}`}) — Pi's own requests ignore https_proxy`,
+		};
+	}
 	return {
-		status: alive ? "ok" : "warn",
-		detail: alive
-			? `${redactUrl(url.toString())} answered ${code} through ${redactProxy(proxy)}`
-			: `${redactUrl(url.toString())} did not answer through ${redactProxy(proxy)}${code ? ` (HTTP ${code})` : ""}; ${scrubCredentials(res.error) || "no response"}`,
+		status: "warn",
+		detail: `${redactUrl(url.toString())} did not answer ${through}${code ? ` (HTTP ${code})` : ""}; ${scrubCredentials(res.error) || "no response"}${direct.status ? ` — and HTTP ${direct.status} directly` : ""}`,
 	};
 }
 

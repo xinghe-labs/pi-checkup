@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { applyDedupePackages, applyRepairs, applyRestoreConfig } from "../src/repair.js";
+import { applyDedupePackages, applyPruneMissingPackages, applyRepairs, applyRestoreConfig } from "../src/repair.js";
 import { buildContext } from "../src/context.js";
 
 function tmp() {
@@ -32,6 +32,17 @@ test("dedupe keeps the first occurrence and backs up the original", () => {
 	assert.equal(backups.length, 1);
 	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, backups[0]), "utf8")).packages.length, 4);
 
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("prune refuses to run without the agent directory", () => {
+	// Guessing the root would resolve every npm: entry against the settings
+	// file's own directory and delete packages that are installed.
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, JSON.stringify({ packages: ["npm:a"] }));
+	assert.throws(() => applyPruneMissingPackages(file), /needs the agent directory/);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).packages, ["npm:a"]);
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 

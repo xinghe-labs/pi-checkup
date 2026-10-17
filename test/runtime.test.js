@@ -25,6 +25,11 @@ test("redactProxy never returns credentials", () => {
 	assert.equal(runtime.redactProxy("socks5h://127.0.0.1:10808"), "socks5h://127.0.0.1:10808");
 	assert.equal(runtime.redactProxy("http://127.0.0.1:10808"), "http://127.0.0.1:10808");
 	assert.equal(runtime.redactProxy("garbage"), "garbage");
+	// A user and a password with no host at all: the shape is the credential.
+	assert.equal(runtime.redactProxy("alice:s3cr3t"), "(configured)");
+	assert.equal(runtime.redactProxy("http://alice:s3cr3t"), "(configured)");
+	// A scheme-less host:port is a shape curl accepts, so it is shown as written.
+	assert.equal(runtime.redactProxy("proxy.corp:8080"), "proxy.corp:8080");
 	assert.equal(runtime.redactProxy(""), "(empty)");
 	assert.equal(runtime.redactProxy(undefined), "(empty)");
 	for (const value of ["alice:s3cr3t@proxy.corp:8080", "http://alice:s3cr3t@proxy.corp:8080"]) {

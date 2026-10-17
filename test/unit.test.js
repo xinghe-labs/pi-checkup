@@ -13,6 +13,7 @@ import {
 	isLoopbackHost,
 	newestBackup,
 	ownerOf,
+	curlProbe,
 	redactUrl,
 	resolvePackageDir,
 	sameCommand,
@@ -260,6 +261,27 @@ test("redactUrl keeps the address and drops every credential", () => {
 	// Not a URL at all, which is what a hand-pasted baseUrl looks like.
 	assert.doesNotMatch(redactUrl("api.example.com/v1?key=sk-live-abc"), /sk-live/);
 	assert.equal(redactUrl(""), "(empty)");
+	// A key pasted where the URL belongs has no dots, slashes or colons, so the
+	// whole string is the secret: nothing of it can be reprinted.
+	assert.equal(redactUrl("sk-ant-api03-AbC123"), "(unparsable value)");
+	// A host-shaped paste stays readable, because that is what makes it fixable.
+	assert.equal(redactUrl("localhost:11434/v1"), "localhost:11434/v1");
+	assert.equal(redactUrl("api.example.com/v1?key=sk-live-abc"), "api.example.com/v1");
+});
+
+test("curlProbe reports a setup failure instead of a dead endpoint", async () => {
+	// An unwritable temp dir makes the config file impossible to create. The
+	// request never leaves the machine, so nothing about the endpoint was learned.
+	const before = process.env.TMPDIR;
+	process.env.TMPDIR = path.join(os.tmpdir(), "checkup-no-such-dir", "nested");
+	try {
+		const res = await curlProbe("http://127.0.0.1:9/v1/models");
+		assert.equal(res.setupFailed, true);
+		assert.equal(res.missing, false);
+	} finally {
+		if (before === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = before;
+	}
 });
 
 test("scrubCredentials removes a userinfo and a query string from an error message", () => {

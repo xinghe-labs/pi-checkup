@@ -177,11 +177,34 @@ export function applyDedupePackages(target) {
 	if (!settings.ok) return unreadable(target, settings);
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to dedupe" };
 
+	const first = dedupePlan(settings.data.packages);
+	const suffix = (mixed) =>
+		mixed ? ` (${mixed} entr${mixed === 1 ? "y" : "ies"} share a source but differ in shape and were left alone)` : "";
+	if (!first.removed) return { ok: true, message: `nothing to dedupe${suffix(first.mixed)}` };
+
+	const backup = copyBackup(target);
+	// Re-read after the backup: the confirmation prompt can sit open
+	// indefinitely, and a `pi install` in another shell meanwhile would be
+	// silently undone by writing the snapshot that was checked.
+	const fresh = readJson(target);
+	if (!fresh.ok) return { ok: false, message: `${path.basename(target)} changed and is no longer valid JSON — nothing written` };
+	const plan = dedupePlan(Array.isArray(fresh.data?.packages) ? fresh.data.packages : []);
+	if (!plan.removed) return { ok: true, message: `nothing to dedupe any more — ${path.basename(target)} changed since the check` };
+	fresh.data.packages = plan.kept;
+	writeAtomic(target, `${JSON.stringify(fresh.data, null, 2)}\n`);
+	return {
+		ok: true,
+		message: `removed ${plan.removed} duplicate entr${plan.removed === 1 ? "y" : "ies"} from ${path.basename(target)}${suffix(plan.mixed)} (backup: ${path.basename(backup)})`,
+	};
+}
+
+/** Which entries a dedupe would keep, without touching the file. */
+function dedupePlan(packages) {
 	const seen = new Map();
 	const kept = [];
 	let removed = 0;
 	let mixed = 0;
-	for (const spec of settings.data.packages) {
+	for (const spec of packages) {
 		const source = sourceOf(spec);
 		if (typeof source !== "string") {
 			kept.push(spec);
@@ -199,17 +222,7 @@ export function applyDedupePackages(target) {
 		mixed++;
 		kept.push(spec);
 	}
-
-	const suffix = mixed ? ` (${mixed} entr${mixed === 1 ? "y" : "ies"} share a source but differ in shape and were left alone)` : "";
-	if (removed === 0) return { ok: true, message: `nothing to dedupe${suffix}` };
-
-	const backup = copyBackup(target);
-	settings.data.packages = kept;
-	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
-	return {
-		ok: true,
-		message: `removed ${removed} duplicate entr${removed === 1 ? "y" : "ies"} from ${path.basename(target)}${suffix} (backup: ${path.basename(backup)})`,
-	};
+	return { kept, removed, mixed };
 }
 
 /**
@@ -220,15 +233,37 @@ export function applyDedupePackages(target) {
  * `dirname(target)` would resolve every entry under the wrong root if this were
  * ever pointed at a project-level settings file.
  */
-export function applyPruneMissingPackages(target, root = path.dirname(target)) {
+export function applyPruneMissingPackages(target, root) {
+	// Not defaulted: a wrong root makes every entry look missing, and this repair
+	// deletes what it cannot resolve.
+	if (!root) throw new Error("applyPruneMissingPackages needs the agent directory to resolve packages against");
 	const settings = readJson(target);
 	if (!settings.ok) return unreadable(target, settings);
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to prune" };
 
+	const first = prunePlan(settings.data.packages, root);
+	if (!first.removed.length) return { ok: true, message: "nothing to prune" };
+
+	const backup = copyBackup(target);
+	// Re-read after the backup for the same reason as dedupe: anything installed
+	// while the prompt was open must survive.
+	const fresh = readJson(target);
+	if (!fresh.ok) return { ok: false, message: `${path.basename(target)} changed and is no longer valid JSON — nothing written` };
+	const plan = prunePlan(Array.isArray(fresh.data?.packages) ? fresh.data.packages : [], root);
+	if (!plan.removed.length) return { ok: true, message: `nothing to prune any more — ${path.basename(target)} changed since the check` };
+	fresh.data.packages = plan.kept;
+	writeAtomic(target, `${JSON.stringify(fresh.data, null, 2)}\n`);
+	return {
+		ok: true,
+		message: `removed ${plan.removed.length} entr${plan.removed.length === 1 ? "y" : "ies"} with no directory on disk (${plan.removed.slice(0, 3).join(", ")}${plan.removed.length > 3 ? ", ..." : ""}); backup: ${path.basename(backup)}`,
+	};
+}
+
+/** Which entries a prune would drop, without touching the file. */
+function prunePlan(packages, root) {
 	const kept = [];
 	const removed = [];
-	const unreadable = [];
-	for (const spec of settings.data.packages) {
+	for (const spec of packages) {
 		const source = sourceOf(spec);
 		const dir = resolvePackageDir(source, root);
 		// Keep anything that cannot be resolved statically: git:/https: sources are
@@ -245,16 +280,7 @@ export function applyPruneMissingPackages(target, root = path.dirname(target)) {
 		}
 		removed.push(String(source));
 	}
-
-	if (!removed.length) return { ok: true, message: "nothing to prune" };
-
-	const backup = copyBackup(target);
-	settings.data.packages = kept;
-	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
-	return {
-		ok: true,
-		message: `removed ${removed.length} entr${removed.length === 1 ? "y" : "ies"} with no directory on disk (${removed.slice(0, 3).join(", ")}${removed.length > 3 ? ", ..." : ""}); backup: ${path.basename(backup)}`,
-	};
+	return { kept, removed };
 }
 
 /** Named repairs, keyed by the `fix` field a check emits. */

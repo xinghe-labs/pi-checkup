@@ -2,8 +2,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import net from "node:net";
-import os from "node:os";
-import { bareHost, curlProbe, exists, humanBytes, isWindows, proxyFromEnv, redactProxy, sh } from "../util.js";
+import { bareHost, curlProbe, exists, humanBytes, isWindows, proxyFromEnv, redactProxy, whichAll } from "../util.js";
 
 export const group = "Runtime";
 
@@ -44,8 +43,17 @@ export async function run({ offline = false, agentDir: root, env = process.env }
 	let launcherDetail;
 	let launcherStatus;
 	if (!found) {
-		launcherStatus = "warn";
-		launcherDetail = `no launcher at ${path.join(root, "bin")}`;
+		// A pi installed by npm lives on PATH, not under the agent dir, so warning
+		// on the absence of ~/.pi/agent/bin/pi told those users their launcher was
+		// missing when `pi` was one PATH lookup away.
+		const onPath = whichAll("pi", env, { windows: isWindows }).find((c) => exists(c));
+		if (onPath) {
+			launcherStatus = "ok";
+			launcherDetail = `${onPath} (on PATH)`;
+		} else {
+			launcherStatus = "warn";
+			launcherDetail = `no launcher at ${path.join(root, "bin")} and no \`pi\` on PATH`;
+		}
 	} else if (!executable) {
 		launcherStatus = "warn";
 		launcherDetail = `${found} is not executable`;
@@ -148,8 +156,18 @@ async function checkProxy(proxy, env = process.env) {
 	} catch {
 		return row("warn", `configured (${shown}) but not a parsable URL`, "Expected something like http://127.0.0.1:10808.");
 	}
-	const port = Number(parsed.port) || DEFAULT_PROXY_PORT[parsed.protocol] || 0;
-	if (!parsed.hostname || !port) {
+	let hostname = parsed.hostname;
+	let port = Number(parsed.port) || DEFAULT_PROXY_PORT[parsed.protocol] || 0;
+	if (!hostname || !port) {
+		// `proxy.corp:8080` with no scheme is a shape curl accepts and this check
+		// used to warn about — the same env value, judged two different ways.
+		const textual = /^([a-z0-9._\-[\]]+):(\d{1,5})$/i.exec(proxy.trim());
+		if (textual) {
+			hostname = textual[1];
+			port = Number(textual[2]);
+		}
+	}
+	if (!hostname || !port) {
 		return row("warn", `configured (${shown}) without a usable host and port`);
 	}
 
@@ -157,6 +175,12 @@ async function checkProxy(proxy, env = process.env) {
 	// real traffic through the proxy.
 	const probeUrl = env.PI_CHECKUP_PROBE_URL;
 	if (probeUrl) {
+		// curl reads a leading "-" as an option, so an inherited value like
+		// `--output=/etc/passwd` would be executed as one. Only an http(s) URL is
+		// something this check knows how to test anyway.
+		if (!/^https?:\/\//i.test(probeUrl)) {
+			return row("warn", `PI_CHECKUP_PROBE_URL is not an http(s) URL; forwarding was not tested`);
+		}
 		const probe = await curlProbe(probeUrl, { proxy });
 		// A non-zero curl exit is not "curl is missing": curl prints 000 to stdout
 		// for a refused or timed-out connection and exits 7 or 28. Reading only
@@ -178,7 +202,7 @@ async function checkProxy(proxy, env = process.env) {
 		);
 	}
 
-	const probe = await tcpProbe(bareHost(parsed.hostname), port);
+	const probe = await tcpProbe(bareHost(hostname), port);
 	return probe.ok
 		? row("ok", `${shown} accepting connections`, "Set PI_CHECKUP_PROBE_URL to test real forwarding through it.")
 		: row("fail", `nothing listening on ${shown} (${probe.error})`, "The proxy process is probably not running.");
