@@ -46,7 +46,9 @@ Environment
   PI_CHECKUP_IGNORE      comma-separated rows to downgrade to skipped, by id,
                          Group:id, or title (e.g. "unreachable,Config:env")
   PI_CHECKUP_PROBE_URL   opt in to a real forwarding test through the proxy
-  https_proxy            tested for reachability; never printed with credentials`;
+  https_proxy, HTTPS_PROXY, http_proxy, HTTP_PROXY, all_proxy, ALL_PROXY
+                         the first one set is tested for reachability; never
+                         printed with credentials`;
 
 function parseArgs(argv) {
 	const opts = { verbose: false, json: false, offline: false, fix: false, yes: false, help: false, version: false };
@@ -137,7 +139,9 @@ async function main() {
 			const applied = await applyRepairs(fixable, { agentDir: ctx.agentDir });
 			process.stdout.write("\nRepairs\n");
 			for (const a of applied) process.stdout.write(`  ${a.ok ? "✓" : "✗"} ${a.message}\n`);
-			process.stdout.write("\nRestart Pi so it picks up the changes.\n");
+			// Only when something was actually written: a refused repair changed
+			// nothing, so telling the user to restart Pi is noise.
+			if (applied.some((a) => a.ok)) process.stdout.write("\nRestart Pi so it picks up the changes.\n");
 			// Re-check: the exit code has to describe the tree as it is now, not as
 			// it was before the repair. Exiting 1 right after fixing the only
 			// failure breaks every `&&` chain that calls this.
