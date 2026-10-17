@@ -22,18 +22,25 @@ export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride,
 
 	let settings = null;
 	let settingsSource = "file";
+	// A live session whose settings could not be read is not the same thing as a
+	// session whose settings match the file: falling back to the file keeps the
+	// report useful, but a repair would then edit a file the running process may
+	// disagree with, so the source is recorded as neither.
+	let runtimeUnreadable = false;
 	if (hasRuntime) {
 		try {
 			settings = pi.getSettings() ?? null;
 			settingsSource = "runtime";
 		} catch {
 			settings = null;
+			runtimeUnreadable = true;
 		}
 	}
 	if (!settings) {
 		const parsed = readJson(settingsFile);
 		settings = parsed.ok ? parsed.data : null;
-		settingsSource = parsed.ok ? "file" : "unavailable";
+		if (runtimeUnreadable) settingsSource = "runtime-unreadable";
+		else settingsSource = parsed.ok ? "file" : "unavailable";
 	}
 
 	return {

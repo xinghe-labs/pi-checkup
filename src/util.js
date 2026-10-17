@@ -153,7 +153,13 @@ export function readJson(file) {
 	} catch (e) {
 		// `invalid` marks a genuine parse failure, which is a different problem from
 		// a file that is missing or too large to read.
-		return { ok: false, invalid: true, error: String(e?.message ?? e).slice(0, 160) };
+		//
+		// V8 quotes a window of the input in some of its messages — `Unexpected
+		// token 's', ..."\"apiKey\": sk-live-d}" is not valid JSON` — and this file
+		// is often models.json, the one that holds keys. Only the position is
+		// carried through; the message itself never reaches a report.
+		const pos = /at position (\d+)/.exec(String(e?.message ?? ""));
+		return { ok: false, invalid: true, error: pos ? `not valid JSON (position ${pos[1]})` : "not valid JSON" };
 	}
 }
 
@@ -269,7 +275,15 @@ export function sourceOf(spec) {
 export function resolvePackageDir(spec, root = agentDir()) {
 	const s = sourceOf(spec);
 	if (!s) return null;
-	if (s.startsWith("npm:")) return path.join(root, "npm", "node_modules", s.slice(4));
+	if (s.startsWith("npm:")) {
+		// `npm:name@1.2.3`, `npm:@scope/name@^2` and `npm:name@latest` all install
+		// into the same directory: the version is a request, not part of the path.
+		// Taking the spec literally made every pinned package read as missing from
+		// node_modules — a `fail` that then offered to delete the entry.
+		const body = s.slice(4);
+		const at = body.indexOf("@", body.startsWith("@") ? 1 : 0);
+		return path.join(root, "npm", "node_modules", at === -1 ? body : body.slice(0, at));
+	}
 	if (s.startsWith("./") || s.startsWith("../") || path.isAbsolute(s)) return path.resolve(root, s);
 	// git:, https:, and bare names are resolved by Pi itself; static probing
 	// cannot follow them reliably, so callers treat null as "not inspectable".

@@ -113,6 +113,15 @@ function declaredBins(settings, root) {
 	return names;
 }
 
+/**
+ * A list cut to six names without a marker reads as the whole list, and the count
+ * in front of it then contradicts what the reader can see.
+ */
+function names(list, max) {
+	const shown = list.slice(0, max).join(", ");
+	return list.length > max ? `${shown}, ... ${list.length - max} more` : shown;
+}
+
 export async function run({ settings, agentDir: root, binDir = path.join(root, "npm", "node_modules", ".bin"), env = process.env }) {
 	// Computed before the early returns: a package whose bins were never linked is
 	// exactly the state where .bin is missing or thin, and the old early return
@@ -146,7 +155,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 				id: "missing-shims",
 				title: "missing shims",
 				status: "warn",
-				detail: `${declared} declared command(s) never linked into .bin: ${[...ownBins].sort().slice(0, 6).join(", ")}`,
+				detail: `${declared} declared command(s) never linked into .bin: ${names([...ownBins].sort(), 6)}`,
 				hint: "npm creates these links during install. Reinstall the owning package without --ignore-scripts.",
 			});
 		}
@@ -233,7 +242,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 			id: "missing-shims",
 			title: "missing shims",
 			status: "warn",
-			detail: `${missingShims.length} declared command(s) never linked into .bin: ${missingShims.slice(0, 6).join(", ")}`,
+			detail: `${missingShims.length} declared command(s) never linked into .bin: ${names(missingShims, 6)}`,
 			hint: "npm creates these links during install. Reinstall the owning package without --ignore-scripts.",
 		});
 	}
@@ -289,8 +298,11 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 			id: "unreachable",
 			title: "unreachable bins",
 			status: "warn",
-			detail: `${unreachable.length} package command(s) not on PATH: ${unreachable.slice(0, 6).join(", ")}`,
-			hint: "Extensions that call these by full path still work; you and the agent cannot invoke them by name.",
+			detail: `${unreachable.length} package command(s) not on PATH: ${names(unreachable, 6)}`,
+			// The file exists — it is just not on PATH — so the fix is the directory,
+			// not a reinstall. Without this the row reads as "something is broken"
+			// with no way to tell what to do about it.
+			hint: `Pi installs package commands into ${binDir} without adding it to PATH. Extensions that call them by full path still work; to use them by name, add that directory to PATH or run them with npx.`,
 		});
 	}
 

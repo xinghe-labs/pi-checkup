@@ -8,6 +8,12 @@ export const group = "Runtime";
 
 const MIN_NODE_MAJOR = 20;
 
+function launcherHint(status, found) {
+	if (status === "ok") return undefined;
+	if (found) return "Shell shims and scripts that call `pi` by name may resolve to a different install.";
+	return "No Pi launcher was found. This report describes the files on disk; install Pi or run it from the directory that has one.";
+}
+
 export async function run({ offline = false, agentDir: root, env = process.env } = {}) {
 	const results = [];
 
@@ -82,7 +88,9 @@ export async function run({ offline = false, agentDir: root, env = process.env }
 		title: "pi launcher",
 		status: launcherStatus,
 		detail: launcherDetail,
-		hint: launcherStatus === "ok" ? undefined : "Shell shims and scripts that call `pi` by name may resolve to a different install.",
+		// "may resolve to a different install" presumes one exists. On a machine
+		// with no Pi at all — the first `npx pi-checkup` — that sentence is wrong.
+		hint: launcherHint(launcherStatus, found),
 	});
 
 	// --- disk --------------------------------------------------------------

@@ -4,7 +4,7 @@
 // are installed, but only the running session knows which tools and commands
 // they really registered, under what names, and who lost a collision.
 import path from "node:path";
-import { normalizePath, ownerOf, readJson, resolvePackageDir, sourceOf } from "../util.js";
+import { normalizePath, ownerOf, readJson, redactSource, resolvePackageDir, sourceOf } from "../util.js";
 
 export const group = "Registry";
 
@@ -167,7 +167,10 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					id: "tool-collisions",
 					title: "tool collisions",
 					status: "skip",
-					detail: "nothing registered to compare",
+					// The tools row above may have just reported registrations, so
+					// "nothing registered" would contradict it: the entries exist and
+					// simply carry no name to compare.
+					detail: "no registered entry carries a name to compare",
 				}
 			: { group, id: "tool-collisions", title: "tool collisions", status: "ok", detail: "none" },
 	);
@@ -197,7 +200,7 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					id: "command-collisions",
 					title: "command collisions",
 					status: "skip",
-					detail: "nothing registered to compare",
+					detail: "no registered entry carries a name to compare",
 				}
 			: { group, id: "command-collisions", title: "command collisions", status: "ok", detail: "none" },
 	);
@@ -247,7 +250,9 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					id: "silent",
 					title: "silent packages",
 					status: "warn",
-					detail: `${silent.join(", ")} declared an extension but registered no tool or command`,
+					// A source can be a URL with userinfo in it, and this list is the only
+					// place a source reaches the report from this module.
+					detail: `${silent.map(redactSource).join(", ")} declared an extension but registered no tool or command`,
 					hint: "May be event-only by design, or may have failed to load. Restart `pi --verbose` to see extension load errors.",
 				}
 			: { group, id: "silent", title: "silent packages", status: "ok", detail: "none" },

@@ -114,7 +114,23 @@ export async function runChecks(ctx, modules = CHECKS, { timeoutMs = MODULE_TIME
 						];
 					}
 				})();
-				return await Promise.race([run, timeout]);
+				const rows = await Promise.race([run, timeout]);
+				// A module that returns a non-array would reach the renderer and throw
+				// out of the whole report, turning one bad check into a crash with no
+				// findings at all. The file's contract is one crash row per module.
+				if (!Array.isArray(rows)) {
+					return [
+						{
+							group: name,
+							id: `crash:${name}`,
+							title: name.toLowerCase(),
+							status: "fail",
+							detail: `check returned ${rows === null ? "null" : typeof rows} instead of a list of rows`,
+							hint: "This is a bug in pi-checkup, not necessarily in your setup. Please report it.",
+						},
+					];
+				}
+				return rows;
 			} finally {
 				clearTimeout(timer);
 			}

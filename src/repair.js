@@ -6,7 +6,7 @@
 // and none of them deletes a package or disables an extension.
 import fs from "node:fs";
 import path from "node:path";
-import { isMissing, newestBackup, readJson, resolvePackageDir, sourceOf } from "./util.js";
+import { isMissing, newestBackup, readJson, redactSource, resolvePackageDir, sourceOf } from "./util.js";
 
 function stamp() {
 	// Milliseconds are kept: two repairs in the same second would otherwise
@@ -138,7 +138,7 @@ function writeAtomic(target, content) {
 function unreadable(target, parsed) {
 	const name = path.basename(target);
 	if (parsed.missing) return { ok: false, message: `${name} does not exist` };
-	if (parsed.invalid) return { ok: false, message: `${name} is not valid JSON: ${parsed.error}` };
+	if (parsed.invalid) return { ok: false, message: `${name}: ${parsed.error}` };
 	return { ok: false, message: `${name} could not be read: ${parsed.error}` };
 }
 
@@ -152,7 +152,9 @@ export function applyRestoreConfig(target) {
 	const backup = newestBackup(target);
 	if (!backup) return { ok: false, message: `no backup found for ${path.basename(target)}` };
 	const parsed = readJson(backup);
-	if (!parsed.ok) return { ok: false, message: `backup ${path.basename(backup)} is not valid JSON either` };
+	// `!ok` covers oversized and unreadable too, and telling the user a valid
+	// 5 MB backup "is not valid JSON" is the same false claim the checks avoid.
+	if (!parsed.ok) return { ok: false, message: `nothing to restore from: ${unreadable(backup, parsed).message}` };
 	const aside = copyBackup(target, "broken");
 	// The backup is valid JSON (checked above), so restoring its bytes verbatim
 	// keeps any formatting the user had.
@@ -270,7 +272,10 @@ export function applyPruneMissingPackages(target, root) {
 	return {
 		ok: true,
 		changed: true,
-		message: `removed ${plan.removed.length} entr${plan.removed.length === 1 ? "y" : "ies"} with no directory on disk (${plan.removed.slice(0, 3).join(", ")}${plan.removed.length > 3 ? ", ..." : ""}); backup: ${path.basename(backup)}`,
+		// A package source can be a URL with userinfo in it, and this message goes
+		// to the terminal and the TUI notification. The check modules redact their
+		// sources; this one prints the same strings.
+		message: `removed ${plan.removed.length} entr${plan.removed.length === 1 ? "y" : "ies"} with no directory on disk (${plan.removed.slice(0, 3).map(redactSource).join(", ")}${plan.removed.length > 3 ? ", ..." : ""}); backup: ${path.basename(backup)}`,
 	};
 }
 

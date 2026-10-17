@@ -94,7 +94,7 @@ export async function run({
 		let detail = `${file} could not be inspected: ${parsed.error}`;
 		let hint = "Nothing in this file was checked. Inspect it by hand if Pi misbehaves.";
 		if (corrupt) {
-			detail = `${file} is not valid JSON: ${parsed.error}`;
+			detail = `${file}: ${parsed.error}`;
 			// The full path, not the basename: a user reading this from another
 			// directory cannot find a bare filename.
 			hint = backup ? `A backup exists at ${backup}. Run \`${fixCommand}\` to restore it.` : "No backup found; fix it by hand.";
@@ -167,15 +167,17 @@ export async function run({
 		// "not found" and "could not be read" are different states, and packages.js
 		// already words them differently. One state should not get two explanations
 		// in one report.
+		let unreadable = false;
 		if (settings === undefined || settings === null) {
-			why = settingsFile && !exists(settingsFile)
-				? "settings.json not found — nothing to compare"
-				: "settings.json could not be inspected";
+			unreadable = Boolean(settingsFile) && exists(settingsFile);
+			why = unreadable ? "settings.json could not be inspected" : "settings.json not found — nothing to compare";
 		} else if (packageList === undefined) why = "no package list in settings.json";
 		// A `packages` value that is present and not a list is a fault in the
 		// config, not an absence — packages.js reports the same value as `warn`,
-		// and one defect with two statuses made the report contradict itself.
-		const faulty = settings !== undefined && settings !== null && packageList !== undefined;
+		// and one defect with two statuses made the report contradict itself. A
+		// file that exists but would not parse is the same case: packages.js calls
+		// it `warn` too, so `skip` here contradicted the row two groups up.
+		const faulty = unreadable || (settings !== undefined && settings !== null && packageList !== undefined);
 		results.push(row("duplicates", "duplicate packages", faulty ? "warn" : "skip", why));
 	} else {
 		// Two entries for one source are not always the same entry twice:
@@ -200,7 +202,10 @@ export async function run({
 		// in-session the list may have come from the running process. The hint has
 		// to follow the same rule, or it names a command that then answers
 		// "Nothing to repair automatically."
-		const canDedupe = settingsSource !== "runtime" && Boolean(settingsFile);
+		// Only a file this check read itself may be rewritten: "runtime" means the
+		// session's copy is authoritative, and "runtime-unreadable" means the file
+		// is a guess.
+		const canDedupe = settingsSource === "file" && Boolean(settingsFile);
 		const listed = [...duplicates, ...mixedShapes].map(redactSource);
 		if (!listed.length) {
 			// Zero entries compared is not a pass: "none" over an empty list is the
@@ -234,13 +239,18 @@ export async function run({
 	// --- environment references --------------------------------------------
 	// Only the credential fields that Pi interpolates, never the raw file text.
 	const models = readJson(modelsFile);
+	// Three states, three sentences: missing, corrupt, unreadable.
+	const modelsUnreadableDetail = (m) => {
+		if (m.missing) return "models.json is missing — no credentials to inspect";
+		return m.invalid ? `models.json: ${m.error}` : `models.json could not be inspected: ${m.error}`;
+	};
 	if (!models.ok) {
 		results.push(
 			row(
 				"env",
 				"env references",
 				"skip",
-				models.missing ? "models.json is missing — no credentials to inspect" : `models.json could not be inspected: ${models.error}`,
+				modelsUnreadableDetail(models),
 			),
 		);
 	} else {

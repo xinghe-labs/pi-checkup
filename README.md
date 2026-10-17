@@ -66,9 +66,9 @@ $ npx pi-checkup
 Registry
   · live registry      no Pi session — registry checks need a running process
 Packages
-  ✓ package dirs       13 present
-  ✓ manifests          13 readable
-  ✓ entry files        12 manifest(s) resolve
+  ✓ package dirs       14 present
+  ✓ manifests          14 readable
+  ✓ entry files        13 manifest(s) resolve
 Binaries
   ✓ dangling links     19 links all resolve
   ✓ shadowed names     none
@@ -108,16 +108,16 @@ This is an actual run on a working install, copied out of the TUI at 80 columns 
 Registry
   ✓ tools              49 registered (39 extension, 10 builtin) across 12
                        sources
-  ✓ commands           94 registered across 20 sources, 0 MCP server(s)
+  ✓ commands           95 registered across 21 sources, 0 MCP server(s)
   ✓ attribution        49 tool(s) from 12 source(s): pi-lens (13), builtin (10),
                        pi-web-access (5), pi-subagents (5) +8 more
   ✓ tool collisions    none
   ✓ command collisions none
   ✓ silent packages    none
 Packages
-  ✓ package dirs       13 present
-  ✓ manifests          13 readable
-  ✓ entry files        12 manifest(s) resolve
+  ✓ package dirs       14 present
+  ✓ manifests          14 readable
+  ✓ entry files        13 manifest(s) resolve
 Binaries
   ✓ dangling links     19 links all resolve
   ✓ shadowed names     none
@@ -173,13 +173,13 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Unreachable bins | A package ships a CLI you cannot invoke by name |
 | **Network** | Endpoint reachability | Probes `<baseUrl>/models` for every provider. `401`/`403` counts as alive — this never validates your key and never spends tokens |
 | | Cleartext auth | A provider on `http://` to another machine with a credential configured — an `apiKey`, a password embedded in the `baseUrl`, or a query string, which cannot be inspected for secrets. The `apiKey` and `baseUrl` credentials are withheld from the probe; a query string is never sent, so that endpoint is reported unprobed. Loopback hosts are exempt |
-| | Malformed baseUrl | A `baseUrl` that is not a URL (including the `localhost:11434/v1` paste with no scheme) or is not a string at all |
+| | baseUrl shape | A `baseUrl` that is not a string or an object. A string that is not a URL — including the `localhost:11434/v1` paste with no scheme — is reported as an unhealthy provider instead, because the endpoint is what would have to be probed |
 | | DNS | Provider hosts that do not resolve, or resolve only to loopback |
 | **Config** | Invalid JSON | With a backup on disk, `/checkup fix` can restore it |
 | | Duplicate package entries | The package loads twice and the second registration can shadow the first |
 | | Unset env references | `$NAME` / `${NAME}` in the `models.json` fields Pi actually interpolates (`apiKey`, header values) with nothing in the environment |
 | | Backups | Whether a broken config could be recovered at all |
-| **Runtime** | Agent directory | Whether the directory being inspected exists at all — without it every other row skips, which would otherwise read as a clean install |
+| **Runtime** | Agent directory | Whether the directory being inspected exists at all — without it most other rows skip, which would otherwise read as a clean install |
 | | Node version, launcher, disk, proxy | The host conditions Pi itself needs |
 | **Any** | Crashed or timed-out module | A check that threw or ran past 30s is reported as a failure naming the module, and every other section still prints |
 
@@ -236,7 +236,7 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
       "title": "unreachable bins",
       "status": "warn",
       "detail": "6 package command(s) not on PATH: pi-web-access-mcp, pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp, pi-lens-analyze",
-      "hint": "Extensions that call these by full path still work; you and the agent cannot invoke them by name."
+      "hint": "Pi installs package commands into /root/.pi/agent/npm/node_modules/.bin without adding it to PATH. Extensions that call them by full path still work; to use them by name, add that directory to PATH or run them with npx."
     },
     {
       "group": "Config",

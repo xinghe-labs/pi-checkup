@@ -13,6 +13,7 @@ import {
 	isLoopbackHost,
 	newestBackup,
 	ownerOf,
+	readJson,
 	curlArgs,
 	curlConfig,
 	curlProbe,
@@ -338,6 +339,28 @@ test("globExists honours an absolute pattern instead of re-rooting it", () => {
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("resolvePackageDir drops a version pin but keeps the scope", () => {
+	const root = path.join(path.sep, "agent");
+	assert.equal(resolvePackageDir("npm:pi-lens@1.2.3", root), path.join(root, "npm", "node_modules", "pi-lens"));
+	assert.equal(resolvePackageDir("npm:@scope/pkg@^2", root), path.join(root, "npm", "node_modules", "@scope", "pkg"));
+	assert.equal(resolvePackageDir("npm:@scope/pkg", root), path.join(root, "npm", "node_modules", "@scope", "pkg"));
+	assert.equal(resolvePackageDir("npm:pkg@latest", root), path.join(root, "npm", "node_modules", "pkg"));
+});
+
+test("readJson reports a parse failure without quoting the file", () => {
+	// Node 22 embeds a slice of the input in some JSON.parse messages, so the raw
+	// message would put a neighbouring apiKey in the report.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-checkup-json-"));
+	const file = path.join(dir, "models.json");
+	fs.writeFileSync(file, '{"providers":{"p":{"apiKey": sk-live-9f8e}}}');
+	const parsed = readJson(file);
+	assert.equal(parsed.ok, false);
+	assert.equal(parsed.invalid, true);
+	assert.doesNotMatch(parsed.error, /sk-live-9f8e/);
+	assert.match(parsed.error, /^not valid JSON/);
+	fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test("redactSource keeps a local path and hides a pasted token", () => {

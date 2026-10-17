@@ -112,8 +112,11 @@ async function main() {
 		// Stamped: a JSON report pasted into an issue has to say what produced it,
 		// and a version or a platform is the first thing anyone asks for.
 		const payload = toJson(results, { version: VERSION, node: process.versions.node, platform: process.platform });
+		// Set before the write, like the text path: a consumer that closes the pipe
+		// mid-payload must still see the code the report implies.
+		process.exitCode = results.some((r) => r.status === "fail") ? 1 : 0;
 		process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
-		return results.some((r) => r.status === "fail") ? 1 : 0;
+		return process.exitCode;
 	}
 
 	const report = renderReport(results, {
@@ -124,12 +127,11 @@ async function main() {
 		// Piped output has no columns; the renderer's default keeps logs stable.
 		width: process.stdout.isTTY ? process.stdout.columns || 80 : 80,
 	});
-	process.stdout.write(`${report}\n`);
-
 	// Set before the first byte of the report, so a consumer that closes the pipe
 	// mid-report (`pi-checkup | head -3`) still exits with the code the report
 	// implies instead of a misleading 0.
 	process.exitCode = results.some((r) => r.status === "fail") ? 1 : 0;
+	process.stdout.write(`${report}\n`);
 	const fixable = results.filter((r) => r.fix && r.fixTarget);
 	let finalResults = results;
 	if (opts.fix) {
@@ -204,7 +206,9 @@ process.stderr.on("error", (e) => {
 // exitCode lets Node flush and exit on its own.
 main().then(
 	(code) => {
-		process.exitCode = code;
+		// A write failure already set 2, and "2 = the run itself crashed" is the
+		// one thing that must not be overwritten by a normal return.
+		if (!reported) process.exitCode = code;
 	},
 	(e) => {
 		// Scrubbed: an uncaught error can quote the URL or the config value it

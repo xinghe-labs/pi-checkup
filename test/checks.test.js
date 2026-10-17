@@ -484,7 +484,6 @@ test("registry: a package declaring an empty extensions list is not silent", asy
 	// green tick over zero inspected packages.
 	assert.equal(rows.silent.status, "skip", rows.silent.detail);
 	assert.match(rows.silent.detail, /no inspectable package declares an extension/);
-	assert.ok(dir);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -720,6 +719,58 @@ function healthyRoot() {
 	fs.chmodSync(path.join(root, "bin", "pi"), 0o755);
 	return root;
 }
+
+test("packages: a pinned spec is resolved to the directory it installs into", async () => {
+	// `npm:pi-spend-guard@0.9.1` was looked up as a directory literally named
+	// "pi-spend-guard@0.9.1", so an installed package was reported missing and the
+	// repair offered to delete the entry from settings.json.
+	const root = tmpRoot();
+	installPkg(root, "pinned", { version: "0.9.1", pi: { extensions: ["./index.js"] } }, ["index.js"]);
+	installPkg(root, "@scope/thing", { version: "2.0.0", pi: { extensions: ["./index.js"] } }, ["index.js"]);
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:pinned@0.9.1", "npm:@scope/thing@^2"] });
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows.dirs.status, "ok");
+	assert.match(rows.dirs.detail, /2 present/);
+	assert.equal(rows.dirs.fix, undefined);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("binaries: a truncated list says how many names it left out", async () => {
+	// Six names printed under "8 package command(s)" reads as a contradiction.
+	const root = tmpRoot();
+	const bins = {};
+	for (let i = 0; i < 8; i++) bins[`cmd${i}`] = `./bin/cmd${i}.js`;
+	installPkg(root, "many", { bin: bins, pi: { extensions: ["./index.js"] } }, ["index.js"]);
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:many"] });
+	const rows = byId(await binaries.run(buildContext({ agentDir: root, env: { PATH: "" } })));
+	const detail = rows["missing-shims"].detail;
+	assert.match(detail, /8 declared command\(s\)/);
+	assert.match(detail, /\.\.\. 2 more/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("runtime: a machine with no Pi at all is not told another install exists", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const rows = byId(await runtime.run(buildContext({ agentDir: root, env: { PATH: "/nonexistent" } })));
+	assert.equal(rows["pi-bin"].status, "warn");
+	assert.match(rows["pi-bin"].detail, /no launcher/);
+	assert.match(rows["pi-bin"].hint, /No Pi launcher was found/);
+	assert.doesNotMatch(rows["pi-bin"].hint, /different install/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("CLI: a missing agent directory is a report, not a crash", async () => {
+	// The first `npx pi-checkup` on a machine without Pi: every row has to say
+	// "could not inspect", and the verdict must not read as a clean bill.
+	const root = path.join(tmpRoot(), "does-not-exist");
+	const { status, stdout } = runCli(root, []);
+	assert.equal(status, 0);
+	assert.doesNotMatch(stdout, /crashed/);
+	assert.match(stdout, /checks:/);
+	assert.doesNotMatch(stdout, /all clear/);
+	fs.rmSync(path.dirname(root), { recursive: true, force: true });
+});
 
 test("CLI: a closed pipe keeps the exit code the report implies", async () => {
 	// `pi-checkup | head -1` used to exit 0 over a failing run, which turns every
@@ -1063,8 +1114,7 @@ test("packages: an absolute pi.extensions entry is resolved where it points", as
 	const root = tmpRoot();
 	const outside = path.join(root, "outside.js");
 	fs.writeFileSync(outside, "");
-	const pkgDir = installPkg(root, "abs", { pi: { extensions: [outside] } });
-	assert.ok(pkgDir);
+	installPkg(root, "abs", { pi: { extensions: [outside] } });
 	writeJson(path.join(root, "settings.json"), { packages: ["npm:abs"] });
 	const rows = byId(await packages.run(buildContext({ agentDir: root })));
 	assert.equal(rows.entries.status, "ok", rows.entries.detail);
@@ -1273,6 +1323,66 @@ test("config: a list with nothing comparable in it is a skip, not a pass", async
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("runner: a module that returns a non-array becomes one crash row", async () => {
+	// The value used to reach the renderer and throw out of the whole report, so a
+	// single bad module produced "crashed" and no findings at all.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const rows = await runChecks(buildContext({ agentDir: root }), [{ name: "Bad", run: async () => "nope" }]);
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0].status, "fail");
+	assert.match(rows[0].detail, /returned string instead of a list of rows/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: a parse error never quotes the file it failed on", async () => {
+	// V8 puts a window of the input in some of its messages, and models.json is
+	// where the keys live: `Unexpected token 's', ..."\"apiKey\": sk-live-9f8e}"`.
+	// The position is enough to find the mistake.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	fs.writeFileSync(path.join(root, "models.json"), '{"providers":{"p":{"apiKey": sk-live-9f8e}}}');
+	const rows = byId(await config.run(buildContext({ agentDir: root })));
+	assert.doesNotMatch(JSON.stringify(rows), /sk-live-9f8e/);
+	// V8 only gives a position for the messages that carry no snippet, so both
+	// forms are acceptable; quoting the file is not.
+	assert.match(rows.env.detail, /^models\.json: not valid JSON/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("context: a session whose settings could not be read offers no file repair", async () => {
+	// getSettings() throwing used to fall back to the file and mark it "file",
+	// which re-armed prune and dedupe against a file the running Pi may disagree
+	// with — the one case the guards exist for.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:gone"] });
+	const pi = {
+		getSettings: () => {
+			throw new Error("nope");
+		},
+	};
+	const ctx = buildContext({ agentDir: root, pi });
+	const rows = byId(await packages.run(ctx));
+	assert.equal(rows.dirs.status, "fail");
+	assert.equal(rows.dirs.fix, undefined, "a guessed settings file must not be rewritten");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: an unreadable settings.json warns in both groups", async () => {
+	// One state, one status: `packages.js` already calls a settings.json it could
+	// not parse a warning, so a `skip` here read as "nothing to report" two groups
+	// away from a warning about the same file.
+	const root = tmpRoot();
+	fs.writeFileSync(path.join(root, "settings.json"), "{ not json");
+	const ctx = buildContext({ agentDir: root });
+	const cfg = byId(await config.run(ctx));
+	const pkg = byId(await packages.run(ctx));
+	assert.equal(cfg.duplicates.status, "warn", cfg.duplicates.detail);
+	assert.match(cfg.duplicates.detail, /could not be inspected/);
+	assert.equal(pkg.installed.status, "warn", pkg.installed.detail);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("config: a packages value that is not a list is a warning, like packages.js says", async () => {
 	const root = tmpRoot();
 	writeJson(path.join(root, "settings.json"), { packages: { a: "npm:x" } });
@@ -1288,7 +1398,10 @@ test("registry: a registry of nameless entries is not a collision-free pass", as
 	const pi = fakePi({ packages: [] }, [{ sourceInfo: { path: "/x/i.js" } }, {}]);
 	const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
 	assert.equal(rows["tool-collisions"].status, "skip");
-	assert.match(rows["tool-collisions"].detail, /nothing registered to compare/);
+	assert.match(rows["tool-collisions"].detail, /no registered entry carries a name to compare/);
+	// The tools row above counted the same two entries, so "nothing registered"
+	// here would contradict it.
+	assert.match(rows.tools.detail, /2 registered/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -1307,7 +1420,7 @@ test("network: a header fetch refuses to build is not a dead endpoint", async ()
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("network: a cleartext endpoint with a query string is not contacted at all", async () => {
+test("network: a cleartext endpoint with a query string is not contacted at all", async (t) => {
 	// Offline mode proves the row, not the wire. This one proves nothing was sent,
 	// and the endpoint has to be reachable-but-non-loopback for the claim to mean
 	// anything: the server listens on this machine's own LAN address, so a probe
@@ -1315,7 +1428,9 @@ test("network: a cleartext endpoint with a query string is not contacted at all"
 	const lan = Object.values(os.networkInterfaces())
 		.flat()
 		.find((iface) => iface && iface.family === "IPv4" && !iface.internal);
-	if (!lan) return; // no non-loopback address to be the "other machine"
+	// Reported as a skip rather than a quiet return: a test that passes with zero
+	// assertions is indistinguishable from one that proved something.
+	if (!lan) return t.skip("no non-loopback IPv4 address to act as the other machine");
 	const http = await import("node:http");
 	let hits = 0;
 	const server = http.createServer((req, res) => {

@@ -147,7 +147,9 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		if (!list.length) continue; // declared nothing verifiable
 		entryChecked++;
 		const missing = list.filter((entry) => !globExists(dir, entry));
-		if (missing.length) missingEntry.push(`${redactSource(source)} -> ${missing.join(", ")}`);
+		// The patterns come from a third-party package.json, so they are untrusted
+		// text on their way to the terminal and `--json`, like everything else here.
+		if (missing.length) missingEntry.push(`${redactSource(source)} -> ${missing.map(redactSource).join(", ")}`);
 	}
 
 	const preview = (list, n) => list.slice(0, n).join(", ") + (list.length > n ? ", ..." : "");
@@ -157,7 +159,10 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 	// The prune repair is only safe when settings came from the file the repair
 	// would rewrite. In-session the settings may come from the running process, so
 	// editing the on-disk copy could either miss the problem or hit a stale file.
-	const canPrune = Boolean(settingsFile) && settingsSource !== "runtime";
+	// Only a file this check read itself may be rewritten: "runtime" means the
+	// session's copy is authoritative, and "runtime-unreadable" means the file is
+	// a guess.
+	const canPrune = Boolean(settingsFile) && settingsSource === "file";
 	if (missingDir.length) {
 		results.push(
 			row("dirs", "package dirs", "fail", `${missingDir.length} missing from node_modules: ${preview(missingDir, 3)}`, {
