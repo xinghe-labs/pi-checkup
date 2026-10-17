@@ -42,6 +42,9 @@ jobs:
           # directory is gone. That is a genuine failure, which makes the exit-code
           # assertion below a real test instead of a tautology.
           root=$(mktemp -d)
+          # Git Bash reports /tmp/... and native Node reads that as C:\\tmp\\...,
+          # so the CLI would inspect a directory bash never wrote to.
+          if command -v cygpath >/dev/null 2>&1; then root=$(cygpath -w "$root"); fi
           printf '%s' '{"packages":["npm:definitely-not-installed"]}' > "$root/settings.json"
           set +e
           PI_CODING_AGENT_DIR="$root" node bin/checkup.js --offline --json > report.json
@@ -111,11 +114,15 @@ jobs:
         run: |
           set -euo pipefail
           npm pack 2>/dev/null
-          tarball=$(ls pi-checkup-*.tgz)
+          # Absolute before changing directory, and in Windows form on Windows:
+          # npm and Node are native binaries, bash is not.
+          tarball="$PWD/$(ls pi-checkup-*.tgz)"
+          if command -v cygpath >/dev/null 2>&1; then tarball=$(cygpath -w "$tarball"); fi
           root=$(mktemp -d)
+          if command -v cygpath >/dev/null 2>&1; then root=$(cygpath -w "$root"); fi
           cd "$root"
           npm init -y >/dev/null
-          npm install --no-audit --no-fund "$OLDPWD/$tarball" >/dev/null
+          npm install --no-audit --no-fund "$tarball" >/dev/null
           version=$(./node_modules/.bin/pi-checkup --version)
           echo "packed CLI reports $version"
           mkdir -p agent
