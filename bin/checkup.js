@@ -25,8 +25,8 @@ Options
   -v, --verbose    show how to fix each finding
       --json       print the report as JSON
       --offline    skip every network probe
-      --fix        apply the safe repairs (requires --yes)
-  -y, --yes        confirm repairs without prompting
+      --fix        list the safe repairs, and apply them with --yes
+  -y, --yes        apply the repairs instead of only listing them
   -h, --help       show this help
       --version    print the version
 

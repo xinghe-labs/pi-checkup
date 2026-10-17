@@ -44,7 +44,7 @@ npx pi-checkup --verbose    # same report, plus the hint under every finding
 npx pi-checkup --offline    # skip every network probe
 npx pi-checkup --json       # for scripts
 npx pi-checkup --fix        # list the safe repairs
-npx pi-checkup --fix -y     # apply them without prompting
+npx pi-checkup --fix -y     # apply them (nothing is written without -y)
 npx pi-checkup --version    # print the version
 npx pi-checkup --help       # every flag and exit code
 ```

@@ -1432,6 +1432,21 @@ test("registry: a registry of nameless entries is not a collision-free pass", as
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("network: offline mode still names a baseUrl that is not a URL", async () => {
+	// Parsing a baseUrl needs no network, so --offline has no reason to stay
+	// quiet about `localhost:11434/v1` — the routine hand-paste that Pi then
+	// reports as a failed request with no hint about why.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { ollama: { baseUrl: "localhost:11434/v1" } } });
+	const rows = byId(await network.run(buildContext({ agentDir: root, env: {}, offline: true })));
+	assert.equal(rows.providers.status, "skip");
+	assert.match(rows.providers.detail, /ollama: baseUrl is not a URL/);
+	assert.equal(rows["baseUrl-shape"].status, "warn");
+	assert.match(rows["baseUrl-shape"].detail, /ollama: baseUrl is not a URL/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("network: a rejected header value is not quoted back", async () => {
 	// undici's message embeds the value it rejected — and here that value is the
 	// apiKey. scrubCredentials cannot see a bare key, so the row must not use it.

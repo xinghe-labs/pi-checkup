@@ -165,16 +165,23 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			}
 		: null;
 
+	// A baseUrl that cannot be parsed is a config fault, not a network one, so it
+	// is named here as well. Offline mode used to report only the endpoints it did
+	// not probe, which left `localhost:11434/v1` — the routine hand-paste — with
+	// no finding at all on a machine that runs with --offline.
+	const notUrl = planned.filter((item) => item.invalid !== undefined).map((item) => `${item.name}: baseUrl is not a URL`);
+	const shapeNotes = [...shape, ...notUrl];
+
 	// Built once so offline mode can emit it too: whether a baseUrl is even a
 	// string is a property of the config, not of the probe.
-	const shapeRow = shape.length
+	const shapeRow = shapeNotes.length
 		? {
 				group,
 				id: "baseUrl-shape",
 				title: "baseUrl shape",
 				status: "warn",
-				detail: `${shape.join("; ")} — not probed`,
-				hint: "baseUrl has to be a quoted string like \"https://api.example.com/v1\".",
+				detail: `${shapeNotes.join("; ")} — not probed`,
+				hint: "baseUrl has to be an absolute http(s) URL as a quoted string, like \"https://api.example.com/v1\".",
 			}
 		: null;
 
@@ -185,8 +192,8 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 				id: "providers",
 				title: "providers",
 				status: "skip",
-				detail: shape.length
-					? `offline mode — ${planned.length} endpoint(s) not probed; ${shape.join("; ")}`
+				detail: shapeNotes.length
+					? `offline mode — ${planned.length} endpoint(s) not probed; ${shapeNotes.join("; ")}`
 					: `offline mode — ${planned.length} configured endpoint(s) not probed`,
 				hint: "Re-run without --offline to test reachability.",
 			},
@@ -242,8 +249,8 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			id: "providers",
 			title: "providers",
 			status: "skip",
-			detail: shape.length
-				? `no provider with a usable baseUrl — ${shape.join("; ")}`
+			detail: shapeNotes.length
+				? `no provider with a usable baseUrl — ${shapeNotes.join("; ")}`
 				: "no provider with a baseUrl in models.json",
 		});
 	} else if (!unhealthy.length && unprobed.length) {
