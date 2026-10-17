@@ -76,14 +76,27 @@ export async function run({
 			results.push(row(`file:${label}`, label, "ok", fromRuntime ? "valid JSON (values read from the running session)" : "valid JSON"));
 			continue;
 		}
+		// A parse failure and an unreadable file are different faults, and only one
+		// of them is corruption. `invalid` is set by readJson for a genuine parse
+		// error; a file over the size cap is reported as unreadable rather than as
+		// broken, because "not valid JSON" over a perfectly valid 5 MB file is a
+		// claim the check never established — and it offered to "restore" it.
+		const corrupt = parsed.invalid === true;
 		const backup = newestBackup(file);
+		let detail = `${file} could not be inspected: ${parsed.error}`;
+		let hint = "Nothing in this file was checked. Inspect it by hand if Pi misbehaves.";
+		if (corrupt) {
+			detail = `${file} is not valid JSON: ${parsed.error}`;
+			// The full path, not the basename: a user reading this from another
+			// directory cannot find a bare filename.
+			hint = backup ? `A backup exists at ${backup}. Run \`${fixCommand}\` to restore it.` : "No backup found; fix it by hand.";
+		}
+		const restorable = corrupt && Boolean(backup);
 		results.push(
-			row(`file:${label}`, label, "fail", `${file} is not valid JSON: ${parsed.error}`, {
-				// The full path, not the basename: a user reading this from another
-				// directory cannot find a bare filename.
-				hint: backup ? `A backup exists at ${backup}. Run \`${fixCommand}\` to restore it.` : "No backup found; fix it by hand.",
-				fix: backup ? "restore-config" : undefined,
-				fixTarget: backup ? file : undefined,
+			row(`file:${label}`, label, corrupt ? "fail" : "warn", detail, {
+				hint,
+				fix: restorable ? "restore-config" : undefined,
+				fixTarget: restorable ? file : undefined,
 			}),
 		);
 	}

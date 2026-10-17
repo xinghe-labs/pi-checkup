@@ -30,7 +30,9 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		const unreadable = settings === undefined || settings === null;
 		const where = settingsSource === "runtime" ? "the running session" : "settings.json";
 		let detail = `no packages in ${where}`;
-		if (unreadable) detail = "settings.json could not be read — no package list to check";
+		// "could not be inspected", not "could not be read": an oversized file was
+		// read fine, it just was not parsed.
+		if (unreadable) detail = "settings.json could not be inspected — no package list to check";
 		else if (malformed) detail = `${where} \`packages\` is not a list`;
 		return [
 			{
@@ -47,6 +49,7 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 	const missingDir = [];
 	const unreadableDir = [];
 	const brokenManifest = [];
+	const badSpecs = [];
 	const badExtensions = [];
 	const missingEntry = [];
 	const unverifiable = [];
@@ -58,9 +61,16 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 
 	for (const spec of specs) {
 		const source = sourceOf(spec);
+		if (source === null) {
+			// A null, a number or an object without `source` is a malformed entry, not
+			// a source "resolved by Pi itself": the old path pushed `null` into the
+			// unverifiable list and printed "2 source(s) ... null, null".
+			badSpecs.push(JSON.stringify(spec) ?? String(spec));
+			continue;
+		}
 		const dir = resolvePackageDir(source, root);
 		if (!dir) {
-			unverifiable.push(String(source));
+			unverifiable.push(source);
 			continue;
 		}
 		let stat;
@@ -176,6 +186,18 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		results.push(row("entries", "entry files", "ok", `${entryChecked} manifest(s) resolve`));
 	} else {
 		results.push(row("entries", "entry files", "skip", "no package declares an entry file"));
+	}
+
+	if (badSpecs.length) {
+		results.push(
+			row(
+				"entries-shape",
+				"package entries",
+				"warn",
+				`${badSpecs.length} entr${badSpecs.length === 1 ? "y is" : "ies are"} not a package source: ${preview(badSpecs, 3)}`,
+				{ hint: "Each entry has to be a string like `npm:name` or `./path`, or an object with a `source` field." },
+			),
+		);
 	}
 
 	if (badExtensions.length) {

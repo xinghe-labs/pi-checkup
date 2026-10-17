@@ -12,6 +12,12 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 	const results = [];
 	const models = readJson(modelsFile);
 	if (!models.ok) {
+		// Same distinction as Config: a parse failure is corruption, an oversized or
+		// unreadable file is not, and saying "not valid JSON" about a valid file is
+		// a claim this check never established.
+		let reason = "could not be inspected";
+		if (models.missing) reason = "is missing";
+		else if (models.invalid) reason = "is not valid JSON";
 		// "cannot read" covered a missing file and a corrupt one with the same
 		// jargon, and those are two different problems with two different fixes.
 		return [
@@ -20,8 +26,12 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 				id: "providers",
 				title: "providers",
 				status: "skip",
-				detail: models.missing ? "no models.json — no endpoint to probe" : `models.json is not valid JSON — no endpoint to probe`,
-				hint: models.missing ? "Add providers to models.json, or configure them through Pi." : "The Config group reports the parse error.",
+				detail: `models.json ${reason} — no endpoint to probe`,
+				hint: models.missing
+					? "Add providers to models.json, or configure them through Pi."
+					: models.invalid
+						? "The Config group reports the parse error."
+						: undefined,
 			},
 		];
 	}

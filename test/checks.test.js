@@ -237,9 +237,22 @@ test("packages: unparseable settings.json is reported as unreadable, not as empt
 	const rows = await packages.run(buildContext({ agentDir: root }));
 	assert.equal(rows.length, 1);
 	assert.equal(rows[0].status, "warn");
-	assert.match(rows[0].detail, /could not be read/);
+	assert.match(rows[0].detail, /could not be inspected/);
 	// The old copy claimed there were no packages in a file it failed to parse.
 	assert.doesNotMatch(rows[0].detail, /no packages/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: an entry that is not a package source is reported as such", async () => {
+	// These used to land in `unverifiable` and print as "2 source(s) ... null,
+	// null", which describes nothing the user can act on.
+	const root = tmpRoot();
+	installPkg(root, "ok", { pi: { extensions: ["./i.js"] } }, ["i.js"]);
+	writeJson(path.join(root, "settings.json"), { packages: [null, 42, "npm:ok"] });
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows["entries-shape"].status, "warn");
+	assert.match(rows["entries-shape"].detail, /null, 42/);
+	assert.equal(rows.unverifiable, undefined);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -650,6 +663,32 @@ test("config: no env references is skipped, not an empty green tick", async () =
 	writeJson(path.join(root, "models.json"), { providers: { p: { apiKey: "literal-key" } } });
 	const rows = byId(await config.run(buildContext({ agentDir: root })));
 	assert.equal(rows.env.status, "skip");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: a file over the size cap is uninspected, not corrupt", async () => {
+	// A perfectly valid 5 MB settings.json was reported as "is not valid JSON"
+	// and offered a restore from backup — two claims the check never established.
+	const root = tmpRoot();
+	fs.writeFileSync(path.join(root, "settings.json"), JSON.stringify({ packages: [], pad: "x".repeat(5 * 1024 * 1024) }));
+	fs.writeFileSync(path.join(root, "settings.json.bak"), JSON.stringify({ packages: [] }));
+
+	const rows = byId(await config.run(buildContext({ agentDir: root })));
+	assert.equal(rows["file:settings.json"].status, "warn");
+	assert.match(rows["file:settings.json"].detail, /could not be inspected/);
+	assert.doesNotMatch(rows["file:settings.json"].detail, /not valid JSON/);
+	assert.equal(rows["file:settings.json"].fix, undefined, "an oversized file is not a repair candidate");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: genuinely broken JSON still fails and offers the restore", async () => {
+	const root = tmpRoot();
+	fs.writeFileSync(path.join(root, "settings.json"), "{ broken");
+	fs.writeFileSync(path.join(root, "settings.json.bak"), JSON.stringify({ packages: [] }));
+	const rows = byId(await config.run(buildContext({ agentDir: root })));
+	assert.equal(rows["file:settings.json"].status, "fail");
+	assert.match(rows["file:settings.json"].detail, /not valid JSON/);
+	assert.equal(rows["file:settings.json"].fix, "restore-config");
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
