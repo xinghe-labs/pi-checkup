@@ -32,7 +32,7 @@ Then, in a session:
 /checkup            run every check
 /checkup verbose    same, plus what to do about each finding
 /checkup json       machine-readable report
-/checkup fix        apply the safe repairs (asks first, backs up every file)
+/checkup fix        restore a broken config from its backup (asks first)
 ```
 
 ### When Pi will not start
@@ -49,6 +49,15 @@ npx pi-checkup --fix -y   # apply the safe repairs without prompting
 It exits `1` when any check fails, so it works as a pre-flight step in CI or a shell profile. After a repair it re-runs the checks and exits on the new result, so `pi-checkup --fix -y && start-pi` does what it looks like it does. `--json` cannot be combined with `--fix`: the JSON is a single snapshot, and a repair changes what the snapshot describes.
 
 The registry section reports skipped — auditing loaded tools genuinely requires a live process — and the CLI says so instead of implying a clean bill of health.
+
+Exit codes: `0` nothing failed, `1` at least one check failed, `2` bad usage. The `--json` payload is the same report the text renderer prints, minus the repair metadata.
+
+| Variable | Effect |
+|---|---|
+| `PI_CODING_AGENT_DIR` | Check a different Pi install than `~/.pi/agent`. The CLI needs no session, so this is how you check a container, a second profile, or a Pi that will not boot at all |
+| `PI_CHECKUP_IGNORE` | Suppress rows you have decided to live with — see below |
+| `PI_CHECKUP_PROBE_URL` | Test real proxy *forwarding* with `curl`, instead of only proving the port is open |
+| `https_proxy`, `HTTP_PROXY` | Honoured by the provider probe and reported (redacted) under Runtime |
 
 ```text
 $ npx pi-checkup
@@ -78,7 +87,7 @@ Config
 Runtime
   ✓ node               v22.23.3
   ✓ pi launcher        /root/.pi/agent/bin/pi
-  ✓ disk               6% used, 950.9 GB free
+  ✓ disk               6% used, 950.8 GB free
   ✓ proxy              http://127.0.0.1:10808 accepting connections
 
 19 checks: 15 ok, 1 warning, 0 failed, 3 skipped
@@ -91,45 +100,50 @@ The footer line is the verdict, and it counts the skipped rows too: `✓ 3 ok, 2
 
 ## Real output
 
-This is an actual run on a working install, copied out of the TUI at 80 columns. 21 of 24 checks pass, two are skipped because there is genuinely nothing to look at, and the one warning is a real problem that `pi list` said nothing about:
+This is an actual run on a working install, copied out of the TUI at 80 columns — not a mock-up. 21 of 24 checks pass, two are skipped because there is genuinely nothing to look at, and the one warning is a real problem that `pi list` said nothing about:
 
 ```text
 Registry
-  ✓ tools            49 registered (39 extension, 10 builtin) across 12 sources
-  ✓ commands         94 registered across 20 sources, 0 MCP server(s)
-  ✓ tool collisions  none
+  ✓ tools              49 registered (39 extension, 10 builtin) across 12
+                       sources
+  ✓ commands           94 registered across 20 sources, 0 MCP server(s)
+  ✓ attribution        49 tool(s) from 12 source(s): pi-lens (13), builtin (10),
+                       pi-web-access (5), pi-subagents (5) +8 more
+  ✓ tool collisions    none
   ✓ command collisions none
-  ✓ silent packages  none
+  ✓ silent packages    none
 Packages
-  ✓ package dirs     13 present
-  ✓ manifests        13 readable
-  ✓ entry files      12 manifest(s) resolve
+  ✓ package dirs       13 present
+  ✓ manifests          13 readable
+  ✓ entry files        12 manifest(s) resolve
 Binaries
-  ✓ dangling links   19 entries all resolve
-  ✓ shadowed names   none
+  ✓ dangling links     19 entries all resolve
+  ✓ shadowed names     none
   ! unreachable bins   6 package command(s) not on PATH: pi-web-access-mcp,
                        pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp,
                        pi-lens-analyze
 Network
-  ✓ providers        2 endpoint(s) reachable
-  ✓ dns              1 provider host(s) resolve normally
+  ✓ providers          2 endpoint(s) reachable
+  ✓ dns                1 provider host(s) resolve normally
 Config
-  ✓ settings.json    valid JSON (values read from the running session)
-  ✓ models.json      valid JSON
-  · project settings none
-  ✓ backups          2 file(s) backed up; edited since the newest backup:
-                     settings.json
+  ✓ settings.json      valid JSON (values read from the running session)
+  ✓ models.json        valid JSON
+  · project settings   none
+  ✓ backups            2 file(s) backed up; edited since the newest backup:
+                       settings.json
   ✓ duplicate packages none
-  · env references   no $VAR reference in models.json credentials
+  · env references     no $VAR reference in models.json credentials
 Runtime
-  ✓ node             v22.23.3
-  ✓ pi launcher      /root/.pi/agent/bin/pi
-  ✓ disk             6% used, 950.9 GB free
-  ✓ proxy            http://127.0.0.1:10808 accepting connections
+  ✓ node               v22.23.3
+  ✓ pi launcher        /root/.pi/agent/bin/pi
+  ✓ disk               6% used, 950.8 GB free
+  ✓ proxy              http://127.0.0.1:10808 accepting connections
 
 24 checks: 21 ok, 1 warning, 0 failed, 2 skipped
 Run `/checkup verbose` to show what to do about each finding.
 ```
+
+The `attribution` row is the part no other tool gives you: which package owns which tools, counted from the live registry rather than from your config. It is also why this report has a column width the earlier CLI example does not — the longest title in a session report is `command collisions`, and the whole block is rendered to fit it.
 
 ## What it checks
 
@@ -156,15 +170,24 @@ Run `/checkup verbose` to show what to do about each finding.
 
 ## `/checkup fix`
 
-Only reversible repairs are automated:
+Only reversible repairs are automated, and inside a session only one of them is offered:
 
 1. **Restore a config file** that is no longer valid JSON, from its newest sibling backup. The broken copy is kept.
+
+Two more repairs rewrite `settings.json`, so only the CLI offers them:
+
 2. **Collapse duplicate `packages` entries** in `settings.json`.
 3. **Prune `packages` entries whose directory is gone** — the ones a reinstall did not bring back. Sources resolved by Pi itself (`git:`, `https:`) are never touched.
 
+Inside a session Pi hands checkup the settings from the *running process*, not the file on disk, and checkup will not rewrite a file it never read — so `/checkup fix` in-session offers repair 1 only. Stop Pi and run the CLI for the other two:
+
+```bash
+npx pi-checkup --fix --yes
+```
+
 Every write is preceded by a timestamped backup, and the command asks for confirmation before touching anything. Anything that would delete a package, disable an extension, or edit your shell environment is reported with a suggestion and left alone — a diagnostic tool should not be able to break your setup in the process of describing it.
 
-Nothing is repaired unless a check found something wrong, so a healthy install writes nothing at all.
+A repair that rewrites `settings.json` re-serialises it with two-space indentation, so expect a larger diff than the change itself. Nothing is repaired unless a check found something wrong, so a healthy install writes nothing at all.
 
 ## Ignoring a finding you have decided to live with
 
@@ -215,7 +238,7 @@ Exit-worthy statuses are `fail`; `warn` means something is degraded but working.
 ## Design principles
 
 - **No traffic to anyone but your own provider.** The only outbound requests are `<baseUrl>/models` for providers already in `models.json`, plus a DNS lookup of those same hosts. The proxy check is a plain TCP connect to the proxy's own address — set `PI_CHECKUP_PROBE_URL` if you want a real end-to-end forwarding test.
-- **No secrets printed, no keys validated.** A provider probe sends whatever auth header your config already defines and ignores the response body. A key on a plain-`http://` endpoint is never sent. A proxy URL is always shown as scheme, host and port — corporate proxies carry credentials in the URL, and `https_proxy` is the one place they usually live in plain text.
+- **No secrets printed, no keys validated.** A provider probe sends whatever auth header your config already defines and ignores the response body. A key on a plain-`http://` endpoint that is not on your own machine is never sent. A proxy URL is always shown as scheme, host and port — corporate proxies carry credentials in the URL, and `https_proxy` is the one place they usually live in plain text.
 - **Non-blocking.** Every check runs concurrently, and every outbound call has its own timeout — 8s for a probe, 4s for DNS, 3s for a TCP connect — under a 30s per-module backstop. A hung endpoint costs 8 seconds, not the whole command.
 - **A crashing check is a finding, not a crash.** If a check module throws, the report says which one, marks it failed, and still shows everything else.
 - **A check with nothing to inspect says so.** `skip` always means "there was nothing to inspect", in every module — an absent optional config file, an empty `.bin`, a provider list with no host to resolve. Zero packages present reports `skip`, never a green tick over nothing, and the verdict counts them: `✓ 3 ok, 2 skipped` rather than a bare "all clear".
@@ -240,7 +263,7 @@ Being explicit about what this cannot see:
 git clone https://github.com/xinghe-labs/pi-checkup
 cd pi-checkup
 npm run lint         # node --check over every source file
-node --test          # 77 tests, no Pi session needed
+node --test          # 90 tests, no Pi session needed
 ```
 
 To try a local checkout without installing:

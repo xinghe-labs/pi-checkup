@@ -24,13 +24,22 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		// an empty package list as a malformed config. The question is whether it
 		// is a list, not whether it exists.
 		const malformed = declared !== undefined && !Array.isArray(declared);
+		// `settings` is absent when the file could not be parsed. Saying "no
+		// packages in settings.json" then asserted something the check never read,
+		// and pointed the user at the wrong problem.
+		const unreadable = settings === undefined || settings === null;
+		const where = settingsSource === "runtime" ? "the running session" : "settings.json";
+		let detail = `no packages in ${where}`;
+		if (unreadable) detail = "settings.json could not be read — no package list to check";
+		else if (malformed) detail = `${where} \`packages\` is not a list`;
 		return [
 			{
 				group,
 				id: "installed",
 				title: "installed",
-				status: "skip",
-				detail: malformed ? "settings.json `packages` is not a list" : "no packages in settings.json",
+				status: malformed || unreadable ? "warn" : "skip",
+				detail,
+				hint: unreadable ? "The Config group reports the parse error." : undefined,
 			},
 		];
 	}
@@ -38,6 +47,7 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 	const missingDir = [];
 	const unreadableDir = [];
 	const brokenManifest = [];
+	const badExtensions = [];
 	const missingEntry = [];
 	const unverifiable = [];
 	// Counted separately so a check that had nothing to look at reports skipped
@@ -79,8 +89,14 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		manifestRead++;
 		const declared = manifest.data?.pi?.extensions;
 		if (!declared) continue; // convention-directory package, nothing to verify
-		const list = Array.isArray(declared) ? declared : [declared];
-		if (!list.length) continue; // declared nothing, so there is nothing to verify
+		const raw = Array.isArray(declared) ? declared : [declared];
+		// A hand-edited manifest can put a number, null or object here, and passing
+		// that to the glob matcher threw `pattern.includes is not a function` out of
+		// this module — which the runner turns into one "check crashed" row, losing
+		// every other package finding.
+		const list = raw.filter((entry) => typeof entry === "string");
+		if (list.length !== raw.length) badExtensions.push(String(source));
+		if (!list.length) continue; // declared nothing verifiable
 		entryChecked++;
 		const missing = list.filter((entry) => !globExists(dir, entry));
 		if (missing.length) missingEntry.push(`${source} -> ${missing.join(", ")}`);
@@ -160,6 +176,18 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		results.push(row("entries", "entry files", "ok", `${entryChecked} manifest(s) resolve`));
 	} else {
 		results.push(row("entries", "entry files", "skip", "no package declares an entry file"));
+	}
+
+	if (badExtensions.length) {
+		results.push(
+			row(
+				"manifest-shape",
+				"manifest shape",
+				"warn",
+				`${badExtensions.length} manifest(s) declare a non-string pi.extensions entry: ${preview(badExtensions, 3)}`,
+				{ hint: "Entry files have to be strings. Reinstall the package, or fix its package.json." },
+			),
+		);
 	}
 
 	if (unverifiable.length) {

@@ -4,7 +4,7 @@
 // /models, and a 401/403 still proves the host answered. No vendor SDK, no
 // API key validation (this package never spends your tokens).
 import path from "node:path";
-import { bareHost, isLoopbackHost, readJson, resolveHost, timedFetch } from "../util.js";
+import { bareHost, isLoopbackHost, readJson, redactUrl, resolveHost, scrubCredentials, timedFetch } from "../util.js";
 
 export const group = "Network";
 
@@ -12,13 +12,16 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 	const results = [];
 	const models = readJson(modelsFile);
 	if (!models.ok) {
+		// "cannot read" covered a missing file and a corrupt one with the same
+		// jargon, and those are two different problems with two different fixes.
 		return [
 			{
 				group,
 				id: "providers",
 				title: "providers",
 				status: "skip",
-				detail: `cannot read ${modelsFile}`,
+				detail: models.missing ? "no models.json — no endpoint to probe" : `models.json is not valid JSON — no endpoint to probe`,
+				hint: models.missing ? "Add providers to models.json, or configure them through Pi." : "The Config group reports the parse error.",
 			},
 		];
 	}
@@ -39,8 +42,21 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 		try {
 			url = new URL(baseUrl.replace(/\/+$/, "") + "/models");
 		} catch {
-			planned.push({ name, invalid: baseUrl });
+			// Redacted: the usual cause is a hand-pasted baseUrl, and a pasted URL
+			// is the one that still has `?key=…` on it.
+			planned.push({ name, invalid: redactUrl(baseUrl) });
 			continue;
+		}
+		// A gateway configured as https://user:pass@host/v1 cannot be fetched at
+		// all: fetch() refuses a URL that carries credentials, so the probe failed
+		// with an error that quoted the password back. Moving them into a header
+		// makes the probe work and keeps them out of the URL and the message.
+		let userinfo = null;
+		if (url.username || url.password) {
+			const pair = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+			userinfo = `Basic ${Buffer.from(pair).toString("base64")}`;
+			url.username = "";
+			url.password = "";
 		}
 		const key = provider.apiKey ?? provider.api_key;
 		const hasKey = typeof key === "string" && key.length > 0;
@@ -51,7 +67,14 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 			// config gets reported instead.
 			cleartext.push(name);
 		}
-		planned.push({ name, url, key: hasKey && !(url.protocol === "http:" && !loopback) ? key : null });
+		planned.push({
+			name,
+			url,
+			key: hasKey && !(url.protocol === "http:" && !loopback) ? key : null,
+			// An explicit apiKey wins over userinfo; a URL carrying both is a user
+			// mid-migration, not a configuration to guess about.
+			userinfo: hasKey ? null : userinfo,
+		});
 	}
 
 	const cleartextRow = cleartext.length
@@ -92,10 +115,11 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 			probes.push(Promise.resolve({ name: item.name, status: "fail", detail: `${item.name}: invalid baseUrl ${item.invalid}` }));
 			continue;
 		}
-		const { name, url, key } = item;
+		const { name, url, key, userinfo } = item;
 		const host = bareHost(url.hostname);
 		hosts.set(host, name);
-		const headers = key ? { Authorization: `Bearer ${key}` } : {};
+		const auth = key ? `Bearer ${key}` : userinfo;
+		const headers = auth ? { Authorization: auth } : {};
 		probes.push(
 			timedFetch(url.toString(), { headers }).then((res) => {
 				// 401/403 means the endpoint is up and merely disagrees about auth,
@@ -196,7 +220,10 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 
 /** One-line verdict for a provider probe, kept out of the ternary chain. */
 function describeProbe(url, res, alive) {
+	// `url.origin` never carries userinfo, but `res.error` is fetch's own message
+	// and does quote the URL it failed on, so it is scrubbed before it can reach
+	// the report.
 	if (alive) return `${url.origin} reachable (HTTP ${res.status})`;
 	if (res.status) return `${url.origin} answered HTTP ${res.status}`;
-	return `${url.origin} unreachable (${res.error})`;
+	return `${url.origin} unreachable (${scrubCredentials(res.error)})`;
 }

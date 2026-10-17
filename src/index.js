@@ -37,7 +37,10 @@ export default function checkupExtension(pi) {
 			const asJson = words.includes("json") || words.includes("--json");
 			const wantsFix = words.includes("fix");
 
-			const results = await runChecks(buildContext({ pi, cwd: ctx.cwd }));
+			// Kept, not discarded: the repair needs the agent directory, and the
+			// Pi command context is not documented to carry one.
+			const checkCtx = buildContext({ pi, cwd: ctx.cwd });
+			const results = await runChecks(checkCtx);
 
 			if (asJson) {
 				ctx.ui.notify(JSON.stringify(toJson(results), null, 2), "info");
@@ -71,10 +74,22 @@ export default function checkupExtension(pi) {
 			}
 
 			const { applyRepairs } = await import("./repair.js");
-			const applied = await applyRepairs(fixable, { agentDir: ctx.agentDir });
+			const applied = await applyRepairs(fixable, { agentDir: checkCtx.agentDir });
 
 			const log = applied.map((a) => `  ${a.ok ? "✓" : "✗"} ${a.message}`).join("\n");
-			ctx.ui.notify(`${report}\n\nRepairs\n${log || "  (nothing applied)"}\n\nRun /reload so Pi picks up the changes.`, "info");
+			// The verdict has to describe the tree after the repair, for the same
+			// reason the CLI's exit code does: reporting the pre-repair findings
+			// under a "repaired" message tells the user the fix did nothing.
+			let verdict = renderVerdict(results);
+			if (applied.some((a) => a.ok)) {
+				const after = await runChecks(buildContext({ pi, cwd: ctx.cwd }));
+				verdict = renderVerdict(after);
+				ctx.ui.setStatus?.("checkup", verdict);
+			}
+			ctx.ui.notify(
+				`${report}\n\nRepairs\n${log || "  (nothing applied)"}\n\n${verdict}  ·  re-checked after repair\n\nRun /reload so Pi picks up the changes.`,
+				"info",
+			);
 		},
 	});
 }

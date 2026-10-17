@@ -21,6 +21,23 @@ const CASE_INSENSITIVE = isWindows || process.platform === "darwin";
 // a bounded read when the path came out of a settings file.
 const MAX_JSON_BYTES = 4 << 20;
 
+const SHIM_EXT = /\.(com|exe|bat|cmd|ps1)$/i;
+
+/**
+ * Are two paths the same command?
+ *
+ * On Windows a package bin is linked as `foo`, `foo.cmd` and `foo.ps1`, and PATH
+ * resolution appends PATHEXT, so the hit is `foo.CMD` while the link is `foo`.
+ * Comparing the raw strings reported every correctly linked package command as
+ * shadowed. The directory still has to match: a `foo.cmd` in some other
+ * directory really is a different program.
+ */
+export function sameCommand(a, b) {
+	if (typeof a !== "string" || typeof b !== "string") return false;
+	const stem = (p) => path.basename(p).replace(SHIM_EXT, "").toLowerCase();
+	return normalizePath(path.dirname(a)) === normalizePath(path.dirname(b)) && stem(a) === stem(b);
+}
+
 /** Root of the Pi agent directory (holds settings.json, models.json, npm/, bin/). */
 export function agentDir() {
 	return process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi", "agent");
@@ -65,8 +82,10 @@ export async function sh(cmd, args, timeout = TIMEOUT_MS) {
  * subprocess per binary inspected (a package with a dozen commands was costing a
  * dozen spawns), and it still answers on images that ship no `which` at all.
  */
-export function whichAll(name, env = process.env) {
-	const exts = isWindows ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean) : [""];
+export const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
+
+export function whichAll(name, env = process.env, { windows = isWindows } = {}) {
+	const exts = windows ? (env.PATHEXT ?? DEFAULT_PATHEXT).split(";").filter(Boolean) : [""];
 	const dirs = (env.PATH ?? "").split(path.delimiter).filter(Boolean);
 	const hits = [];
 	for (const dir of dirs) {
@@ -75,7 +94,7 @@ export function whichAll(name, env = process.env) {
 			if (!exists(candidate)) continue;
 			// `which` only reports executables on POSIX; matching that keeps the
 			// shadow and unreachable findings honest.
-			if (!isWindows) {
+			if (!windows) {
 				try {
 					fs.accessSync(candidate, fs.constants.X_OK);
 				} catch {
@@ -108,7 +127,7 @@ export function readJson(file) {
 		return { ok: false, missing: e?.code === "ENOENT", error: String(e?.message ?? e) };
 	}
 	try {
-		return { ok: true, data: JSON.parse(raw), raw };
+		return { ok: true, data: JSON.parse(raw) };
 	} catch (e) {
 		// `invalid` marks a genuine parse failure, which is a different problem from
 		// a file that is missing or too large to read.
@@ -320,6 +339,45 @@ export async function resolveHost(host, timeout = 4000) {
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+/**
+ * A URL that is safe to put in a report: scheme, host, port and path, with the
+ * userinfo and the query string dropped.
+ *
+ * Both are routine places to paste a credential — a self-hosted gateway with
+ * `https://user:pass@host/v1`, or a provider URL copied with `?key=sk-…` still
+ * attached — and a report is the one place they must not reappear.
+ */
+export function redactUrl(raw) {
+	const text = String(raw ?? "").trim();
+	if (!text) return "(empty)";
+	if (!text.includes("://")) {
+		// Not a URL. Strip anything that looks like a credential anyway rather than
+		// echoing the raw paste back at the user.
+		return scrubCredentials(text);
+	}
+	try {
+		const url = new URL(text);
+		const path = url.pathname === "/" ? "" : url.pathname;
+		return `${url.protocol}//${url.host}${path}`;
+	} catch {
+		return scrubCredentials(text);
+	}
+}
+
+/**
+ * Scrub credentials out of arbitrary text — an error message that quotes the URL
+ * it failed on, for instance. Node's fetch says
+ * `Request cannot be constructed from a URL that includes credentials:
+ * https://user:pass@host/v1/models`, and that message ends up in the report.
+ */
+export function scrubCredentials(text) {
+	return String(text ?? "")
+		.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1***@")
+		// A query string is dropped whole rather than masked: it is where a pasted
+		// `?key=sk-…` lives, and nothing in a report needs it.
+		.replace(/\?[^\s]*/g, "");
 }
 
 /**

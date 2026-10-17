@@ -7,7 +7,7 @@
 //      PATH, so the name resolves to something else entirely.
 import path from "node:path";
 import fs from "node:fs";
-import { exists, isMissing, normalizePath, readJson, resolvePackageDir, sourceOf, whichAll } from "../util.js";
+import { exists, isMissing, normalizePath, readJson, resolvePackageDir, sameCommand, sourceOf, whichAll } from "../util.js";
 
 export const group = "Binaries";
 
@@ -53,7 +53,8 @@ function danglingRow(dangling, entryCount) {
 	if (!entryCount) {
 		return { group, id: "dangling", title: "dangling links", status: "skip", detail: "no entries in .bin to check" };
 	}
-	return { group, id: "dangling", title: "dangling links", status: "ok", detail: `${entryCount} entries all resolve` };
+	const noun = entryCount === 1 ? "entry" : "entries";
+	return { group, id: "dangling", title: "dangling links", status: "ok", detail: `${entryCount} ${noun} all resolve` };
 }
 
 /** bin names that installed packages declare in their own manifests. */
@@ -90,6 +91,9 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 				title: "bin dir",
 				status: isMissing(binDir) ? "skip" : "warn",
 				detail: isMissing(binDir) ? `${binDir} does not exist (no npm packages installed)` : `cannot read ${binDir}`,
+				hint: isMissing(binDir)
+					? undefined
+					: "A permissions or filesystem problem, not a missing install. Check ownership of the agent directory.",
 			},
 		];
 	}
@@ -105,6 +109,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 				title: "bin dir",
 				status: "warn",
 				detail: `cannot read ${binDir}: ${String(e?.message ?? e)}`,
+				hint: "Nothing below this point was checked. Fix the permissions on that directory and re-run.",
 			},
 		];
 	}
@@ -170,7 +175,9 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 		}
 		// realpath on both sides: a symlinked ~/.pi (or /var on macOS) is the same
 		// file, and comparing raw strings called every package bin shadowed.
-		if (normalizePath(hits[0]) !== normalizePath(path.join(binDir, entry))) shadowed.push({ name: entry, actual: hits[0] });
+		// sameCommand also folds the Windows shim extension, where PATH resolution
+		// answers `foo.CMD` for a link named `foo`.
+		if (!sameCommand(hits[0], path.join(binDir, entry))) shadowed.push({ name: entry, actual: hits[0] });
 	}
 
 	const shownShadow = shadowed

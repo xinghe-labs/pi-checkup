@@ -104,3 +104,19 @@ jobs:
           if (r.summary.fail !== 0) throw new Error('fresh install reported failures: ' + JSON.stringify(r.checks.filter(c => c.status === 'fail')));
           console.log('packed CLI report ok:', JSON.stringify(r.summary));
           "
+          # The CLI and the extension are two entry points over the same source. The
+          # tarball check above proves the first one loads; nothing proved the second
+          # one is even importable, so a broken relative import in the extension
+          # entry would only surface when a user installed the package.
+          node --input-type=module -e "
+          import('./node_modules/pi-checkup/src/index.js').then((mod) => {
+            if (typeof mod.default !== 'function') throw new Error('entry does not export a function');
+            const seen = [];
+            mod.default({ registerCommand: (name, def) => seen.push({ name, def }) });
+            if (seen.length !== 1) throw new Error('expected one command, got ' + seen.length);
+            if (seen[0].name !== 'checkup') throw new Error('unexpected command name: ' + seen[0].name);
+            if (typeof seen[0].def.handler !== 'function') throw new Error('command has no handler');
+            if (!seen[0].def.description) throw new Error('command has no description');
+            console.log('packed extension registers /' + seen[0].name);
+          }).catch((e) => { console.error(e); process.exit(1); });
+          "

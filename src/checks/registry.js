@@ -16,7 +16,11 @@ export const group = "Registry";
 function call(fn) {
 	try {
 		const value = fn();
-		return Array.isArray(value) ? { ok: true, value } : { ok: true, value: [] };
+		// A non-array is a shape this code does not understand, not an empty
+		// registry: treating it as [] would print "0 registered across 0 sources"
+		// as a pass over a registry that was never read.
+		if (Array.isArray(value)) return { ok: true, value };
+		return { ok: false, error: `unexpected registry shape (${value === null ? "null" : typeof value})` };
 	} catch (e) {
 		return { ok: false, error: String(e?.message ?? e).slice(0, 120) };
 	}
@@ -81,24 +85,27 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					hint: "The Pi API may have changed, or an extension failed mid-load. Run `pi --verbose`.",
 				},
 	);
-	results.push(
-		commandsResult.ok
-			? {
-					group,
-					id: "commands",
-					title: "commands",
-					status: "ok",
-					detail: `${commands.length} registered across ${commandsByOwner.size} sources, ${servers.length} MCP server(s)`,
-				}
-			: {
-					group,
-					id: "commands",
-					title: "commands",
-					status: "warn",
-					detail: `could not read the command registry (${commandsResult.error})`,
-					hint: "The Pi API may have changed, or an extension failed mid-load. Run `pi --verbose`.",
-				},
-	);
+	// A failed getMcpServers() is not "0 servers": reporting the zero would state a
+	// fact the check never learned.
+	const serverCount = serversResult.ok ? `${servers.length} MCP server(s)` : "MCP servers unreadable";
+	if (commandsResult.ok) {
+		results.push({
+			group,
+			id: "commands",
+			title: "commands",
+			status: "ok",
+			detail: `${commands.length} registered across ${commandsByOwner.size} sources, ${serverCount}`,
+		});
+	} else {
+		results.push({
+			group,
+			id: "commands",
+			title: "commands",
+			status: "warn",
+			detail: `could not read the command registry (${commandsResult.error})`,
+			hint: "The Pi API may have changed, or an extension failed mid-load. Run `pi --verbose`.",
+		});
+	}
 
 	// Which package owns which names — the answer `pi list` cannot give. Shown
 	// under --verbose, since the summary line above already covers the default view.
@@ -235,7 +242,9 @@ function declaredPackages(settings, root) {
 		// A single string is as valid as a list here; both declare at least one
 		// extension, and only "declares none" means silence is expected.
 		const declared = manifest.data?.pi?.extensions;
-		const count = Array.isArray(declared) ? declared.length : declared === undefined ? 0 : 1;
+		let count = 1;
+		if (Array.isArray(declared)) count = declared.length;
+		else if (declared === undefined) count = 0;
 		if (!count) continue;
 		out.push({ label: source.replace(/^npm:/, ""), dir: normalizePath(dir) });
 	}

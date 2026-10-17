@@ -127,7 +127,10 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 	lines.push("");
 	const warnWord = s.warn === 1 ? "warning" : "warnings";
 	lines.push(`${s.total} checks: ${s.ok} ok, ${s.warn} ${warnWord}, ${s.fail} failed${s.skip ? `, ${s.skip} skipped` : ""}`);
-	if (!verbose && results.some((r) => r.hint && r.status !== "ok")) {
+	// Any hint, on any row. Tying this to non-ok rows meant a report whose only
+	// finding carried no hint never mentioned --verbose at all, so the user had
+	// no way to learn the flag exists.
+	if (!verbose && results.some((r) => r.hint)) {
 		lines.push(`Run \`${hintCommand}\` to show what to do about each finding.`);
 	}
 	return lines.join("\n");

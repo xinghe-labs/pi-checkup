@@ -14,6 +14,7 @@ import * as packages from "../src/checks/packages.js";
 import * as config from "../src/checks/config.js";
 import * as binaries from "../src/checks/binaries.js";
 import * as registry from "../src/checks/registry.js";
+import * as network from "../src/checks/network.js";
 import { runChecks } from "../src/checks/index.js";
 import { buildContext } from "../src/context.js";
 
@@ -106,7 +107,9 @@ test("packages: a non-list `packages` value is reported, not walked char by char
 
 	const rows = await packages.run(buildContext({ agentDir: root }));
 	assert.equal(rows.length, 1);
-	assert.equal(rows[0].status, "skip");
+	// warn, not skip: a non-list value is a fault in the config, and `skip` is
+	// reserved for "there was nothing to inspect".
+	assert.equal(rows[0].status, "warn");
 	assert.match(rows[0].detail, /not a list/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
@@ -228,6 +231,32 @@ test("config: an unreadable file is a failure with a restore offered", async () 
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("packages: unparseable settings.json is reported as unreadable, not as empty", async () => {
+	const root = tmpRoot();
+	fs.writeFileSync(path.join(root, "settings.json"), "{ broken");
+	const rows = await packages.run(buildContext({ agentDir: root }));
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0].status, "warn");
+	assert.match(rows[0].detail, /could not be read/);
+	// The old copy claimed there were no packages in a file it failed to parse.
+	assert.doesNotMatch(rows[0].detail, /no packages/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: a non-string pi.extensions entry does not crash the module", async () => {
+	// `pattern.includes is not a function` escaped this module and the runner
+	// replaced every package finding with a single "check crashed" row.
+	const root = tmpRoot();
+	installPkg(root, "bad", { pi: { extensions: [null, { file: "index.js" }] } });
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:bad"] });
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows["manifest-shape"]?.status, "warn");
+	assert.match(rows["manifest-shape"].detail, /non-string/);
+	// The rest of the module still reports: one bad manifest does not blind it.
+	assert.equal(rows.dirs.status, "ok");
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 // --- binaries ------------------------------------------------------------
 
 test("binaries: shadowing is only reported for commands a package advertises", async () => {
@@ -259,6 +288,30 @@ test("binaries: shadowing is only reported for commands a package advertises", a
 	}
 });
 
+test("binaries: a correctly linked package command is not shadowed", async () => {
+	// The negative case: the PATH hit *is* the link npm created. Nothing asserted
+	// this, so a regression that flagged every declared command as shadowed would
+	// have passed the suite.
+	const root = tmpRoot();
+	const binDir = path.join(root, "npm", "node_modules", ".bin");
+	fs.mkdirSync(binDir, { recursive: true });
+	const link = path.join(binDir, "checkup-owntool");
+	fs.writeFileSync(link, "#!/bin/sh\n");
+	fs.chmodSync(link, 0o755);
+	installPkg(root, "owner", { bin: { "checkup-owntool": "./cli.js" }, pi: { extensions: ["./i.js"] } });
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:owner"] });
+
+	const env = { ...process.env, PATH: binDir };
+	try {
+		const rows = byId(await binaries.run(buildContext({ agentDir: root, env })));
+		assert.equal(rows.shadowed.status, "ok");
+		assert.equal(rows.shadowed.detail, "none");
+		assert.equal(rows.unreachable, undefined, "a command on PATH must not be called unreachable");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("binaries: no .bin directory is skipped rather than failed", async () => {
 	const root = tmpRoot();
 	writeJson(path.join(root, "settings.json"), { packages: [] });
@@ -279,7 +332,7 @@ test("binaries: a leftover staging link from an interrupted install is not a bro
 
 	const rows = byId(await binaries.run(buildContext({ agentDir: root })));
 	assert.equal(rows.dangling.status, "ok", rows.dangling.detail);
-	assert.equal(rows.dangling.detail, "1 entries all resolve");
+	assert.equal(rows.dangling.detail, "1 entry all resolve");
 	assert.equal(rows.staging.status, "warn");
 	assert.match(rows.staging.detail, /leftover staging link/);
 	fs.rmSync(root, { recursive: true, force: true });
@@ -396,6 +449,48 @@ test("runChecks turns a crashed module into a failure, not a warning", async () 
 	assert.match(rows[0].detail, /boom/);
 });
 
+test("runChecks: a module that never settles becomes a timeout failure", async () => {
+	// The timeout branch had no coverage at all: the crash test only exercises a
+	// throw, which is the easy half.
+	const rows = await runChecks(
+		buildContext({ agentDir: tmpRoot() }),
+		[{ group: "Broken", run: () => new Promise(() => {}) }],
+		{ timeoutMs: 20 },
+	);
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0].id, "timeout:Broken");
+	assert.equal(rows[0].status, "fail");
+	assert.match(rows[0].detail, /did not finish within/);
+});
+
+test("network: a credentialed baseUrl is probed without printing the credential", async () => {
+	// fetch() refuses a URL that carries credentials, so this provider used to
+	// fail with an error message that quoted the password into the report.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { gw: { baseUrl: "https://user:sekrit@127.0.0.1:9/v1", apiKey: "sk-live-nope" } },
+	});
+	const rows = await network.run(buildContext({ agentDir: root }));
+	const text = JSON.stringify(rows);
+	assert.doesNotMatch(text, /sekrit/);
+	assert.doesNotMatch(text, /sk-live-nope/);
+	// The host is still reported, so the row is actionable.
+	assert.match(text, /127\.0\.0\.1/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: an unparseable baseUrl is reported without its query string", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { pasted: { baseUrl: "api.example.com/v1?key=sk-live-pasted" } } });
+	const rows = await network.run(buildContext({ agentDir: root }));
+	const text = JSON.stringify(rows);
+	assert.doesNotMatch(text, /sk-live-pasted/);
+	assert.match(text, /invalid baseUrl/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 // --- CLI -----------------------------------------------------------------
 
 /** Run the CLI against a temporary agent root, never the developer's real one. */
@@ -471,6 +566,43 @@ test("CLI: repairing the only failure makes the exit code 0", () => {
 	assert.ok(fs.readdirSync(root).some((f) => f.startsWith("settings.json.broken-")));
 });
 
+test("CLI: a successful prune repair exits 0, not 1", () => {
+	// The repair rewrites settings.json, but the checks ran against a context that
+	// still held the pre-repair package list, so the re-check reported the entry
+	// the repair had just removed and the exit code stayed 1. The restore repair
+	// hid this because it re-reads the file on every run.
+	const root = healthyRoot();
+	const settings = path.join(root, "settings.json");
+	fs.writeFileSync(settings, JSON.stringify({ packages: ["npm:gone"] }));
+
+	assert.equal(runCli(root, ["--offline"]).status, 1);
+
+	const fixed = runCli(root, ["--offline", "--fix", "-y"]);
+	assert.match(fixed.stdout, /removed 1 entry/);
+	assert.deepEqual(JSON.parse(fs.readFileSync(settings, "utf8")).packages, []);
+	assert.equal(fixed.status, 0, fixed.stdout);
+	assert.doesNotMatch(fixed.stdout.split("Repairs")[1] ?? "", /✗ \d+ failed/, "the post-repair verdict still reports the repaired failure");
+});
+
+test("CLI: a successful dedupe clears the duplicate warning", () => {
+	// The package directory has to exist, or the prune repair fires first and
+	// removes both entries, which would test the wrong repair.
+	const root = healthyRoot();
+	installPkg(root, "a", { pi: { extensions: ["./i.js"] } }, ["i.js"]);
+	fs.writeFileSync(path.join(root, "settings.json"), JSON.stringify({ packages: ["npm:a", "npm:a"] }));
+
+	const before = runCli(root, ["--offline"]);
+	assert.equal(before.status, 0, before.stdout);
+	assert.match(before.stdout, /duplicate packages/);
+
+	const fixed = runCli(root, ["--offline", "--fix", "-y"]);
+	assert.match(fixed.stdout, /removed 1 duplicate entry/);
+	assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "settings.json"), "utf8")).packages, ["npm:a"]);
+	// The re-check has to see the deduplicated list, not the one the context
+	// parsed before the repair.
+	assert.doesNotMatch(fixed.stdout.split("Repairs")[1] ?? "", /duplicate packages/);
+});
+
 test("CLI: --fix without --yes only lists the repairs", () => {
 	const root = healthyRoot();
 	const settings = path.join(root, "settings.json");
@@ -542,7 +674,10 @@ test("config: hints name a command the caller can actually run", async () => {
 	assert.match(cli.duplicates.hint, /npx pi-checkup --fix/);
 	const pi = { getSettings: () => ({ packages: ["npm:a", "npm:a"] }) };
 	const live = byId(await config.run(buildContext({ agentDir: root, pi })));
-	assert.match(live.duplicates.hint, /\/checkup fix/);
+	// In-session the repair is withheld, so naming `/checkup fix` here would point
+	// the user at a command that answers "Nothing to repair automatically."
+	assert.doesNotMatch(live.duplicates.hint, /\/checkup fix/);
+	assert.match(live.duplicates.hint, /npx pi-checkup --fix --yes/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 

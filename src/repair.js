@@ -2,8 +2,8 @@
 //
 // Everything under ./checks/ reads and reports; repairs live here so the write
 // surface stays small, auditable, and shared by the in-session `/checkup fix`
-// and the standalone CLI. Both repairs back up the file they are about to
-// change, and neither one deletes a package or disables an extension.
+// and the standalone CLI. Every repair backs up the file it is about to change,
+// and none of them deletes a package or disables an extension.
 import fs from "node:fs";
 import path from "node:path";
 import { isMissing, newestBackup, readJson, resolvePackageDir, sourceOf } from "./util.js";
@@ -240,7 +240,6 @@ const REPAIRS = {
 	"prune-missing-packages": applyPruneMissingPackages,
 };
 
-export const REPAIR_NAMES = Object.keys(REPAIRS);
 
 /**
  * Apply every fixable finding, at most once per (repair, file) pair.

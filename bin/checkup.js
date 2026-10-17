@@ -148,7 +148,14 @@ async function main() {
 			// Re-check: the exit code has to describe the tree as it is now, not as
 			// it was before the repair. Exiting 1 right after fixing the only
 			// failure breaks every `&&` chain that calls this.
-			if (applied.some((a) => a.ok)) finalResults = await runChecks(ctx);
+			//
+			// The context has to be rebuilt, not reused: it holds the settings it
+			// parsed on construction, so re-running the checks against the old one
+			// reports the entries the repair just removed. That is how a successful
+			// prune still exited 1.
+			if (applied.some((a) => a.ok)) {
+				finalResults = await runChecks(buildContext({ cwd: process.cwd(), offline: opts.offline }));
+			}
 		}
 	} else if (fixable.length) {
 		process.stdout.write(`\n${fixable.length} finding(s) can be repaired with --fix.\n`);
@@ -156,7 +163,10 @@ async function main() {
 
 	// Discoverability: the CLI cannot audit the registry, and saying so is more
 	// useful than letting the skipped section look like a clean bill of health.
-	process.stdout.write(`\n${renderVerdict(finalResults)}  ·  run /checkup inside Pi for registry checks\n`);
+	// Labelled, because an unlabelled verdict printed under a pre-repair report
+	// reads as a contradiction: "1 failed" then "✓ 23 ok".
+	const after = finalResults === results ? "" : "  ·  re-checked after repair";
+	process.stdout.write(`\n${renderVerdict(finalResults)}${after}  ·  run /checkup inside Pi for registry checks\n`);
 	return finalResults.some((r) => r.status === "fail") ? 1 : 0;
 }
 

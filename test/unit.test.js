@@ -6,7 +6,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { bareHost, globExists, humanBytes, isLoopbackHost, newestBackup, ownerOf, resolvePackageDir, sourceOf } from "../src/util.js";
+import {
+	bareHost,
+	globExists,
+	humanBytes,
+	isLoopbackHost,
+	newestBackup,
+	ownerOf,
+	redactUrl,
+	resolvePackageDir,
+	sameCommand,
+	scrubCredentials,
+	sourceOf,
+	whichAll,
+} from "../src/util.js";
 import { renderReport, renderVerdict, summarize, toJson } from "../src/render.js";
 import checkupExtension from "../src/index.js";
 
@@ -211,4 +224,48 @@ test("no rendered line exceeds the requested width", () => {
 			assert.ok(line.length <= width, `width ${width}: ${line.length} cols: ${line}`);
 		}
 	}
+});
+
+test("sameCommand folds the Windows shim extension but not the directory", () => {
+	// PATH resolution answers `foo.CMD` for a link named `foo`; comparing the raw
+	// strings called every correctly linked package command shadowed on Windows.
+	assert.equal(sameCommand("C:\\pi\\npm\\node_modules\\.bin\\foo.CMD", "C:\\pi\\npm\\node_modules\\.bin\\foo"), true);
+	assert.equal(sameCommand("C:\\pi\\npm\\node_modules\\.bin\\foo.ps1", "C:\\pi\\npm\\node_modules\\.bin\\foo"), true);
+	// A different program with the same name really is shadowing.
+	assert.equal(sameCommand("C:\\Windows\\foo.cmd", "C:\\pi\\npm\\node_modules\\.bin\\foo"), false);
+	// On POSIX there is no shim extension to fold.
+	assert.equal(sameCommand("/usr/local/bin/foo", "/opt/pi/node_modules/.bin/foo"), false);
+	assert.equal(sameCommand("/opt/pi/node_modules/.bin/foo", "/opt/pi/node_modules/.bin/foo"), true);
+});
+
+test("whichAll honours PATHEXT when told it is Windows", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "checkup-which-"));
+	fs.writeFileSync(path.join(dir, "tool.CMD"), "");
+	try {
+		const env = { PATH: dir, PATHEXT: ".CMD" };
+		// The platform branch is injectable so it can be exercised from Linux,
+		// where PATHEXT never applies.
+		assert.deepEqual(whichAll("tool", env, { windows: true }), [path.join(dir, "tool.CMD")]);
+		// Without the Windows branch the extension is not appended at all.
+		assert.deepEqual(whichAll("tool", env, { windows: false }), []);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("redactUrl keeps the address and drops every credential", () => {
+	assert.equal(redactUrl("https://user:pass@gateway.corp/v1"), "https://gateway.corp/v1");
+	assert.equal(redactUrl("https://api.example.com/v1?key=sk-live-abc"), "https://api.example.com/v1");
+	assert.equal(redactUrl("http://[::1]:11434/v1"), "http://[::1]:11434/v1");
+	// Not a URL at all, which is what a hand-pasted baseUrl looks like.
+	assert.doesNotMatch(redactUrl("api.example.com/v1?key=sk-live-abc"), /sk-live/);
+	assert.equal(redactUrl(""), "(empty)");
+});
+
+test("scrubCredentials removes a userinfo and a query string from an error message", () => {
+	// This is the exact wording Node's fetch uses, and it quotes the URL.
+	const message = "Request cannot be constructed from a URL that includes credentials: https://u:p@host/v1/models";
+	assert.doesNotMatch(scrubCredentials(message), /u:p@/);
+	assert.match(scrubCredentials(message), /https:\/\/\*\*\*@host\/v1\/models/);
+	assert.doesNotMatch(scrubCredentials("failed for https://host/v1?token=abc"), /token=abc/);
 });

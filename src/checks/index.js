@@ -81,8 +81,10 @@ export async function runChecks(ctx, modules = CHECKS, { timeoutMs = MODULE_TIME
 						},
 					]);
 				}, timeoutMs);
-				// Do not hold the process open just to fire a timeout nobody needs.
-				timer.unref?.();
+				// Deliberately not unref'd. An unref'd timer lets the event loop empty
+				// while a check is still pending, so Node exits before the timeout
+				// fires: no report, exit code 0. The timer only extends the process's
+				// life while a check is genuinely hung, which is exactly when it must.
 			});
 			try {
 				const run = (async () => {

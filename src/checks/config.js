@@ -79,7 +79,9 @@ export async function run({
 		const backup = newestBackup(file);
 		results.push(
 			row(`file:${label}`, label, "fail", `${file} is not valid JSON: ${parsed.error}`, {
-				hint: backup ? `A backup exists at ${path.basename(backup)}. Run \`${fixCommand}\` to restore it.` : "No backup found; fix it by hand.",
+				// The full path, not the basename: a user reading this from another
+				// directory cannot find a bare filename.
+				hint: backup ? `A backup exists at ${backup}. Run \`${fixCommand}\` to restore it.` : "No backup found; fix it by hand.",
 				fix: backup ? "restore-config" : undefined,
 				fixTarget: backup ? file : undefined,
 			}),
@@ -145,14 +147,19 @@ export async function run({
 			if (seen.has(source)) duplicates.add(source);
 			seen.add(source);
 		}
+		// Deduping the file is only correct when the file is what the report read;
+		// in-session the list may have come from the running process. The hint has
+		// to follow the same rule, or it names a command that then answers
+		// "Nothing to repair automatically."
+		const canDedupe = settingsSource !== "runtime" && Boolean(settingsFile);
 		results.push(
 			duplicates.size
 				? row("duplicates", "duplicate packages", "warn", `${[...duplicates].join(", ")} listed more than once`, {
-						hint: `Run \`${fixCommand}\` to collapse them to one entry each.`,
-						// Deduping the file is only correct when the file is what the report
-						// read; in-session the list may have come from the running process.
-						fix: settingsSource === "runtime" ? undefined : "dedupe-packages",
-						fixTarget: settingsSource === "runtime" ? undefined : settingsFile,
+						hint: canDedupe
+							? `Run \`${fixCommand}\` to collapse them to one entry each.`
+							: "Remove the repeated entries from settings.json by hand, or run `npx pi-checkup --fix --yes` with Pi stopped.",
+						fix: canDedupe ? "dedupe-packages" : undefined,
+						fixTarget: canDedupe ? settingsFile : undefined,
 					})
 				: row("duplicates", "duplicate packages", "ok", "none"),
 		);

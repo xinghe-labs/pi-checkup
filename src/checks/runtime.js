@@ -215,8 +215,13 @@ async function probeThroughProxy(proxy, probeUrl) {
 	let configFile;
 	try {
 		configFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-checkup-")), "curl.conf");
-		// curl config syntax: quoted values, backslash escapes.
-		const quoted = String(proxy).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+		// curl config syntax: quoted values, backslash escapes. Line breaks are
+		// stripped first: a newline in the value would end the directive and let the
+		// rest of the string start a new one.
+		const quoted = String(proxy)
+			.replace(/[\r\n]/g, "")
+			.replace(/\\/g, "\\\\")
+			.replace(/"/g, '\\"');
 		fs.writeFileSync(configFile, `proxy = "${quoted}"\n`, { mode: 0o600 });
 	} catch {
 		return { out: "", err: "could not create a temp config file", missing: false };
