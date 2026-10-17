@@ -16,8 +16,24 @@ function call(fn, fallback) {
 	}
 }
 
-export async function run({ pi }) {
+export async function run({ pi, hasRuntime, settings }) {
 	const results = [];
+
+	// Without a running session there is no registry to audit. Say so once rather
+	// than emitting five empty checks that look like passes.
+	if (!hasRuntime) {
+		return [
+			{
+				group,
+				id: "runtime",
+				title: "live registry",
+				status: "skip",
+				detail: "no Pi session — registry checks need a running process",
+				hint: "Run /checkup from inside Pi to audit loaded tools and commands.",
+			},
+		];
+	}
+
 	const tools = call(() => pi.getAllTools(), []);
 	const commands = call(() => pi.getCommands(), []);
 	const servers = call(() => pi.getMcpServers(), []);
@@ -87,7 +103,7 @@ export async function run({ pi }) {
 	// A package that declares extensions but registered nothing is the most
 	// common failure mode that produces no error message anywhere.
 	const registered = new Set([...toolsByOwner.keys(), ...commandsByOwner.keys()]);
-	const declared = declaredPackages(pi);
+	const declared = declaredPackages(settings);
 	const silent = declared.filter((name) => !registered.has(name));
 	results.push(
 		silent.length
@@ -118,14 +134,7 @@ function findDuplicates(items) {
 }
 
 /** Packages from settings whose manifests actually declare an extension entry. */
-function declaredPackages(pi) {
-	const settings = (() => {
-		try {
-			return pi.getSettings();
-		} catch {
-			return null;
-		}
-	})();
+function declaredPackages(settings) {
 	const out = [];
 	for (const spec of settings?.packages ?? []) {
 		const source = typeof spec === "string" ? spec : spec?.source;

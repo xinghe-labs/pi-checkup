@@ -1,7 +1,6 @@
 // Config checks — is the configuration well-formed, backed up, and free of
 // entries that silently cancel each other out?
 import path from "node:path";
-import fs from "node:fs";
 import { agentDir, exists, newestBackup, readJson } from "../util.js";
 
 export const group = "Config";
@@ -126,46 +125,4 @@ export async function run({ cwd }) {
 	}
 
 	return results;
-}
-
-/** Restore a broken config file from its newest sibling backup. */
-export function applyRestoreConfig(target) {
-	const backup = newestBackup(target);
-	if (!backup) return { ok: false, message: `no backup found for ${path.basename(target)}` };
-	const parsed = readJson(backup);
-	if (!parsed.ok) return { ok: false, message: `backup ${path.basename(backup)} is not valid JSON either` };
-	const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-	const aside = `${target}.broken-${stamp}`;
-	fs.copyFileSync(target, aside);
-	fs.copyFileSync(backup, target);
-	return { ok: true, message: `restored ${path.basename(target)} from ${path.basename(backup)} (broken copy kept as ${path.basename(aside)})` };
-}
-
-/** Collapse duplicate `packages` entries, preserving the first occurrence. */
-export function applyDedupePackages(target) {
-	const settings = readJson(target);
-	if (!settings.ok) return { ok: false, message: `${path.basename(target)} is not valid JSON` };
-	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to dedupe" };
-
-	const seen = new Set();
-	const kept = [];
-	for (const spec of settings.data.packages) {
-		const source = sourceOf(spec);
-		if (typeof source !== "string") {
-			kept.push(spec);
-			continue;
-		}
-		if (seen.has(source)) continue;
-		seen.add(source);
-		kept.push(spec);
-	}
-	const removed = settings.data.packages.length - kept.length;
-	if (removed === 0) return { ok: true, message: "nothing to dedupe" };
-
-	const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-	const backup = `${target}.checkup-bak-${stamp}`;
-	fs.copyFileSync(target, backup);
-	settings.data.packages = kept;
-	fs.writeFileSync(target, `${JSON.stringify(settings.data, null, 2)}\n`);
-	return { ok: true, message: `removed ${removed} duplicate entr${removed === 1 ? "y" : "ies"} from ${path.basename(target)} (backup: ${path.basename(backup)})` };
 }

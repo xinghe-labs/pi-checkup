@@ -23,7 +23,7 @@ export function toJson(results, extra = {}) {
  * Human report. Plain text on purpose: it renders identically in the TUI, over
  * RPC, and in a CI log, and it stays readable when the terminal is 60 columns.
  */
-export function renderReport(results, { verbose = false } = {}) {
+export function renderReport(results, { verbose = false, hintCommand = "/checkup verbose" } = {}) {
 	const byGroup = new Map();
 	for (const r of results) {
 		const g = r.group ?? "Other";
@@ -47,9 +47,10 @@ export function renderReport(results, { verbose = false } = {}) {
 
 	const s = summarize(results);
 	lines.push("");
-	lines.push(`${s.total} checks: ${s.ok} ok, ${s.warn} warning, ${s.fail} failed${s.skip ? `, ${s.skip} skipped` : ""}`);
+	const warnWord = s.warn === 1 ? "warning" : "warnings";
+	lines.push(`${s.total} checks: ${s.ok} ok, ${s.warn} ${warnWord}, ${s.fail} failed${s.skip ? `, ${s.skip} skipped` : ""}`);
 	if (!verbose && results.some((r) => r.hint && r.status !== "ok")) {
-		lines.push("Run `/checkup verbose` to show what to do about each finding.");
+		lines.push(`Run \`${hintCommand}\` to show what to do about each finding.`);
 	}
 	return lines.join("\n");
 }
@@ -58,6 +59,6 @@ export function renderReport(results, { verbose = false } = {}) {
 export function renderVerdict(results) {
 	const s = summarize(results);
 	if (s.fail) return `✗ ${s.fail} failed`;
-	if (s.warn) return `! ${s.warn} warning`;
+	if (s.warn) return `! ${s.warn} ${s.warn === 1 ? "warning" : "warnings"}`;
 	return "✓ all clear";
 }

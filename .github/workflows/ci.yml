@@ -24,6 +24,14 @@ jobs:
           for f in $(find src -name '*.js'); do node --check "$f"; done
       - name: Unit tests
         run: node --test
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          node bin/checkup.js --version
+          node bin/checkup.js --help
+          # A report must render and exit non-fatally even on a bare runner.
+          node bin/checkup.js --offline --json > report.json
+          node -e "const r=require('./report.json'); if(!r.summary||!Array.isArray(r.checks)) throw new Error('bad report shape'); console.log('report ok:', JSON.stringify(r.summary));"
 
   manifest:
     runs-on: ubuntu-latest
@@ -44,9 +52,13 @@ jobs:
             if (!fs.existsSync(e.replace(/^\.\//, ''))) throw new Error('missing entry: ' + e);
           }
           if (!pkg.files.includes('src/')) throw new Error('files[] would exclude the source');
+          if (!pkg.files.includes('bin/')) throw new Error('files[] would exclude the CLI');
+          if (!pkg.bin['pi-checkup']) throw new Error('bin entry missing');
+          if (!fs.existsSync(pkg.bin['pi-checkup'].replace(/^\.\//, ''))) throw new Error('bin entry file missing');
           console.log('manifest ok');
           "
       - name: Packed tarball contains the entry point
         run: |
           npm pack --dry-run 2>&1 | tee pack.log
           grep -q 'src/index.js' pack.log
+          grep -q 'bin/checkup.js' pack.log

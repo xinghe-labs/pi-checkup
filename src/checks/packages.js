@@ -11,17 +11,10 @@ import { agentDir, globExists, readJson, resolvePackageDir } from "../util.js";
 
 export const group = "Packages";
 
-export async function run({ pi, cwd }) {
+export async function run({ settings, cwd }) {
 	const results = [];
 	const root = agentDir();
 
-	const settings = (() => {
-		try {
-			return pi.getSettings();
-		} catch {
-			return null;
-		}
-	})();
 	const specs = settings?.packages ?? [];
 
 	if (!specs.length) {

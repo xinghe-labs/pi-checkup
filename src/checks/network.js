@@ -8,7 +8,7 @@ import { agentDir, readJson, resolveHost, timedFetch } from "../util.js";
 
 export const group = "Network";
 
-export async function run() {
+export async function run({ offline = false } = {}) {
 	const results = [];
 	const modelsFile = path.join(agentDir(), "models.json");
 	const models = readJson(modelsFile);
@@ -27,6 +27,19 @@ export async function run() {
 	const providers = models.data?.providers ?? models.data ?? {};
 	const entries = Object.entries(providers).filter(([, p]) => p && typeof p === "object");
 
+	if (offline) {
+		return [
+			{
+				group,
+				id: "offline",
+				title: "providers",
+				status: "skip",
+				detail: `offline mode — ${entries.length} configured endpoint(s) not probed`,
+				hint: "Re-run without --offline to test reachability.",
+			},
+		];
+	}
+
 	const hosts = new Map();
 	const probes = [];
 	for (const [name, provider] of entries) {
@@ -36,13 +49,7 @@ export async function run() {
 		try {
 			url = new URL(baseUrl.replace(/\/+$/, "") + "/models");
 		} catch {
-			results.push({
-				group,
-				id: `url:${name}`,
-				title: name,
-				status: "fail",
-				detail: `invalid baseUrl: ${baseUrl}`,
-			});
+			probes.push(Promise.resolve({ name, status: "fail", detail: `${name}: invalid baseUrl ${baseUrl}` }));
 			continue;
 		}
 		hosts.set(url.hostname, name);
@@ -54,19 +61,17 @@ export async function run() {
 				// 401/403 means the endpoint is up and merely disagrees about auth,
 				// which is a configuration problem, not a reachability problem.
 				const alive = res.ok && (res.status === 200 || res.status === 401 || res.status === 403);
-				return {
-					group,
-					id: `endpoint:${name}`,
-					title: name,
-					status: alive ? "ok" : "warn",
-					detail: describeProbe(url, res, alive),
-					hint: alive ? undefined : "Check the baseUrl, whether the server is running, and whether a proxy is required.",
-				};
+				return { name, status: alive ? "ok" : "warn", detail: describeProbe(url, res, alive) };
 			}),
 		);
 	}
 
-	if (!probes.length) {
+	// One line regardless of how many providers are configured. A user with ten
+	// endpoints should not get ten lines of green ticks; the detail is still
+	// there under `verbose`.
+	const outcomes = await Promise.all(probes);
+	const unhealthy = outcomes.filter((o) => o.status !== "ok");
+	if (!outcomes.length) {
 		results.push({
 			group,
 			id: "providers",
@@ -74,9 +79,24 @@ export async function run() {
 			status: "skip",
 			detail: "no provider with a baseUrl in models.json",
 		});
+	} else if (!unhealthy.length) {
+		results.push({
+			group,
+			id: "providers",
+			title: "providers",
+			status: "ok",
+			detail: `${outcomes.length} endpoint(s) reachable`,
+		});
+	} else {
+		results.push({
+			group,
+			id: "providers",
+			title: "providers",
+			status: unhealthy.some((o) => o.status === "fail") ? "fail" : "warn",
+			detail: `${unhealthy.length} of ${outcomes.length} unhealthy: ${unhealthy.map((o) => o.name).join(", ")}`,
+			hint: `${unhealthy.map((o) => o.detail).join("; ")}. Check the baseUrl, whether the server is running, and whether a proxy is required.`,
+		});
 	}
-
-	results.push(...(await Promise.all(probes)));
 
 	// --- DNS ---------------------------------------------------------------
 	// A host that resolves to loopback while the baseUrl is remote, or does not

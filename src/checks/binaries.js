@@ -12,14 +12,8 @@ import { agentDir, exists, readJson, resolvePackageDir, whichAll, isWindows } fr
 export const group = "Binaries";
 
 /** bin names that installed packages declare in their own manifests. */
-function declaredBins(pi) {
+function declaredBins(settings) {
 	const names = new Set();
-	let settings;
-	try {
-		settings = pi.getSettings();
-	} catch {
-		return names;
-	}
 	for (const spec of settings?.packages ?? []) {
 		const dir = resolvePackageDir(spec);
 		if (!dir) continue;
@@ -37,7 +31,7 @@ function declaredBins(pi) {
 	return names;
 }
 
-export async function run({ pi }) {
+export async function run({ settings }) {
 	const binDir = path.join(agentDir(), "npm", "node_modules", ".bin");
 	if (!exists(binDir)) {
 		return [
@@ -99,9 +93,10 @@ export async function run({ pi }) {
 	];
 
 	// --- shadowing and reachability ----------------------------------------
-	const ownBins = declaredBins(pi);
+	const ownBins = declaredBins(settings);
 	const shadowed = [];
 	const unreachable = [];
+	const norm = (p) => (isWindows ? normalizeWin(p) : p);
 
 	for (const entry of entries) {
 		const hits = await whichAll(entry);
@@ -111,11 +106,14 @@ export async function run({ pi }) {
 			if (ownBins.has(entry)) unreachable.push(entry);
 			continue;
 		}
-		const ours = path.join(binDir, entry);
-		const first = isWindows ? normalizeWin(hits[0]) : hits[0];
-		const mine = isWindows ? normalizeWin(ours) : ours;
-		if (first !== mine) shadowed.push({ name: entry, actual: hits[0] });
+		if (norm(hits[0]) !== norm(path.join(binDir, entry))) shadowed.push({ name: entry, actual: hits[0] });
 	}
+
+	const shownShadow = shadowed
+		.slice(0, 4)
+		.map((s) => `${s.name} resolves to ${s.actual}`)
+		.join("; ");
+	const moreShadow = shadowed.length > 4 ? `; and ${shadowed.length - 4} more` : "";
 
 	results.push(
 		shadowed.length
@@ -124,10 +122,7 @@ export async function run({ pi }) {
 					id: "shadowed",
 					title: "shadowed names",
 					status: "warn",
-					detail: shadowed
-						.slice(0, 4)
-						.map((s) => `${s.name} resolves to ${s.actual}`)
-						.join("; ") + (shadowed.length > 4 ? `; and ${shadowed.length - 4} more` : ""),
+					detail: shownShadow + moreShadow,
 					hint: "Running the bare name in a shell starts a different program. Call the package binary by full path, or reorder PATH.",
 				}
 			: { group, id: "shadowed", title: "shadowed names", status: "ok", detail: "none" },

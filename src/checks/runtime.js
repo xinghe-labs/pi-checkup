@@ -7,7 +7,7 @@ export const group = "Runtime";
 
 const MIN_NODE_MAJOR = 20;
 
-export async function run() {
+export async function run({ offline = false } = {}) {
 	const results = [];
 	const root = agentDir();
 
@@ -94,6 +94,8 @@ export async function run() {
 	const proxy = process.env.https_proxy || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.http_proxy;
 	if (!proxy) {
 		results.push({ group, id: "proxy", title: "proxy", status: "skip", detail: "none configured" });
+	} else if (offline) {
+		results.push({ group, id: "proxy", title: "proxy", status: "skip", detail: `configured (${proxy}); not tested in offline mode` });
 	} else {
 		// Neutral, cheap endpoint: any HTTP answer proves the proxy is forwarding.
 		// Override with PI_CHECKUP_PROBE_URL when the default is blocked locally.

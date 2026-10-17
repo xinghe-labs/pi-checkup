@@ -23,14 +23,19 @@
       "./src/index.js"
     ]
   },
+  "bin": {
+    "pi-checkup": "./bin/checkup.js"
+  },
   "files": [
     "src/",
+    "bin/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/",
-    "lint": "node --check src/index.js"
+    "test": "node --test",
+    "lint": "node --check src/index.js",
+    "checkup": "node ./bin/checkup.js"
   },
   "repository": {
     "type": "git",

@@ -98,7 +98,22 @@ test("toJson drops internal fix metadata", () => {
 test("renderVerdict prefers the worst status", () => {
 	assert.equal(renderVerdict([{ status: "ok" }, { status: "skip" }]), "✓ all clear");
 	assert.equal(renderVerdict([{ status: "ok" }, { status: "warn" }]), "! 1 warning");
+	assert.equal(renderVerdict([{ status: "warn" }, { status: "warn" }]), "! 2 warnings");
 	assert.equal(renderVerdict([{ status: "warn" }, { status: "fail" }]), "✗ 1 failed");
+});
+
+test("renderReport takes its footer hint from the caller", () => {
+	const results = [{ group: "Config", title: "x", status: "warn", detail: "d", hint: "h" }];
+	assert.ok(renderReport(results).includes("/checkup verbose"));
+	assert.ok(renderReport(results, { hintCommand: "pi-checkup --verbose" }).includes("pi-checkup --verbose"));
+});
+
+test("the registry check reports skipped when no session is running", async () => {
+	const registry = await import("../src/checks/registry.js");
+	const results = await registry.run({ pi: null, hasRuntime: false, settings: null });
+	assert.equal(results.length, 1);
+	assert.equal(results[0].status, "skip");
+	assert.match(results[0].detail, /no Pi session/);
 });
 
 test("the extension exports a factory that registers a command", () => {
