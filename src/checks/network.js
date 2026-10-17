@@ -361,7 +361,12 @@ async function probeEndpoint(url, { headers, proxy }) {
 		// for it is the same mistake the curl path already avoids with
 		// `setupFailed`, and the config is where the fix is.
 		if (!res.status && /Headers|invalid header|Failed to parse URL|Invalid value/i.test(res.error ?? "")) {
-			return { status: "skip", detail: `not probed: ${scrubCredentials(res.error)}` };
+			// Not the error text: undici quotes the offending value, and the value
+			// here is the apiKey. `Headers.append: "sk-…" is an invalid header
+			// value` would put a key in the report, the TUI notification and the
+			// --json payload, and scrubCredentials only knows userinfo and query
+			// strings. The reader needs the cause, not the secret.
+			return { status: "skip", detail: "not probed: the request could not be built — a header value or baseUrl the fetch API rejects" };
 		}
 		// 401/403 means the endpoint is up and merely disagrees about auth, which
 		// is a configuration problem, not a reachability problem.

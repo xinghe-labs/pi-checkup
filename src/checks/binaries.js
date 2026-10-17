@@ -34,7 +34,7 @@ function stagingRow(staging, danglingStaging, unreadableStaging = []) {
 		title: "install leftovers",
 		status: broken || unclear ? "warn" : "ok",
 		detail: broken
-			? `${broken} of ${staging.length} leftover staging link(s) do not resolve: ${staging.slice(0, 6).join(", ")}`
+			? `${broken} of ${staging.length} leftover staging link(s) do not resolve: ${names(staging, 6)}`
 			: unclear
 				? `${staging.length} leftover staging link(s), ${unclear} of them could not be followed`
 				: `${staging.length} leftover staging link(s), all resolve`,
@@ -49,7 +49,7 @@ function danglingRow(dangling, linkCount, entryCount, unreadable = 0) {
 			id: "dangling",
 			title: "dangling links",
 			status: "fail",
-			detail: `${dangling.length} broken: ${dangling.slice(0, 6).join(", ")}`,
+			detail: `${dangling.length} broken: ${names(dangling, 6)}`,
 			hint: "Usually a blocked postinstall or a skipped optional native dependency. Reinstall the owning package with install scripts approved.",
 		};
 	}
@@ -225,7 +225,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 			id: "unreadable-links",
 			title: "unreadable links",
 			status: "warn",
-			detail: `${unreadableLinks.length} link(s) could not be resolved: ${unreadableLinks.slice(0, 6).join(", ")}`,
+			detail: `${unreadableLinks.length} link(s) could not be resolved: ${names(unreadableLinks, 6)}`,
 			hint: "Not proven broken — the target may exist but be unreadable for this user. Check ownership of the package directory.",
 		});
 	}

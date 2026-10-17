@@ -27,10 +27,14 @@ export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride,
 	// report useful, but a repair would then edit a file the running process may
 	// disagree with, so the source is recorded as neither.
 	let runtimeUnreadable = false;
+	// `settings === null` is two different states: a file that could not be read,
+	// and a file whose JSON is literally `null`. Only this flag separates them.
+	let settingsLoaded = false;
 	if (hasRuntime) {
 		try {
 			settings = pi.getSettings() ?? null;
 			settingsSource = "runtime";
+			settingsLoaded = true;
 		} catch {
 			settings = null;
 			runtimeUnreadable = true;
@@ -39,6 +43,7 @@ export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride,
 	if (!settings) {
 		const parsed = readJson(settingsFile);
 		settings = parsed.ok ? parsed.data : null;
+		settingsLoaded = parsed.ok;
 		if (runtimeUnreadable) settingsSource = "runtime-unreadable";
 		else settingsSource = parsed.ok ? "file" : "unavailable";
 	}
@@ -55,6 +60,7 @@ export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride,
 		projectSettingsFile: path.join(cwd ?? process.cwd(), ".pi", "settings.json"),
 		binDir: path.join(root, "npm", "node_modules", ".bin"),
 		settings,
+		settingsLoaded,
 		settingsSource,
 		hasRuntime,
 		// Checks read the environment through the context, not from process.env, so

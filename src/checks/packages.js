@@ -10,6 +10,7 @@ import fs from "node:fs";
 import {
 	exists,
 	globExists,
+	isMissing,
 	makeRow,
 	pinnedVersion,
 	readJson,
@@ -43,7 +44,7 @@ function describeSpec(spec) {
 	return keys.length ? `an object with keys ${keys.slice(0, 4).join(", ")}` : "an empty object";
 }
 
-export async function run({ settings, agentDir: root, settingsFile, settingsSource }) {
+export async function run({ settings, settingsLoaded, agentDir: root, settingsFile, settingsSource }) {
 	const results = [];
 
 	// A hand-edited settings.json can put a string here, and iterating that would
@@ -59,24 +60,28 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 		// `settings` is absent when the file could not be parsed. Saying "no
 		// packages in settings.json" then asserted something the check never read,
 		// and pointed the user at the wrong problem.
-		const unreadable = settings === undefined || settings === null;
+		// "Not loaded" and "loaded as null" are different files: a settings.json
+		// containing `null` parses fine and is still not a config.
+		const unreadable = !settingsLoaded;
+		const notObject = settingsLoaded && (settings === null || typeof settings !== "object" || Array.isArray(settings));
 		// A missing settings.json is not a fault: Pi boots on defaults and writes
 		// the file the first time a setting changes. A file that exists but did not
 		// parse is a fault, and Config already says so.
-		const absent = Boolean(settingsFile) && !exists(settingsFile);
+		const absent = Boolean(settingsFile) && isMissing(settingsFile);
 		const where = settingsSource === "runtime" ? "the running session" : "settings.json";
 		let detail = `no packages in ${where}`;
 		// "could not be inspected", not "could not be read": an oversized file was
 		// read fine, it just was not parsed.
 		if (absent) detail = "settings.json not found — no package list to check";
 		else if (unreadable) detail = "settings.json could not be inspected — no package list to check";
+		else if (notObject) detail = "settings.json is valid JSON but not an object — no package list to check";
 		else if (malformed) detail = `${where} \`packages\` is not a list`;
 		return [
 			{
 				group,
 				id: "installed",
 				title: "installed",
-				status: malformed || (unreadable && !absent) ? "warn" : "skip",
+				status: malformed || notObject || (unreadable && !absent) ? "warn" : "skip",
 				detail,
 				hint: unreadable && !absent ? "The Config group reports why settings.json could not be used." : undefined,
 			},

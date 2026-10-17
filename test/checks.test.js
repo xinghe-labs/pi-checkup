@@ -1432,6 +1432,83 @@ test("registry: a registry of nameless entries is not a collision-free pass", as
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("network: a rejected header value is not quoted back", async () => {
+	// undici's message embeds the value it rejected — and here that value is the
+	// apiKey. scrubCredentials cannot see a bare key, so the row must not use it.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: { gw: { baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-live-bad\nvalue" } },
+	});
+	const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
+	assert.equal(rows.providers.status, "skip");
+	assert.doesNotMatch(rows.providers.detail, /sk-live-bad/);
+	assert.match(rows.providers.detail, /could not be built/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: an error that quotes a token is scrubbed before it is printed", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const pi = {
+		getSettings: () => ({ packages: [] }),
+		getAllTools: () => {
+			throw new Error("cannot load git:https://ghp_sekrit@github.com/me/x");
+		},
+		getCommands: () => [],
+		getMcpServers: () => [],
+	};
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
+	assert.equal(rows.tools.status, "warn");
+	assert.doesNotMatch(JSON.stringify(rows), /ghp_sekrit/);
+	assert.match(rows.tools.detail, /could not read the tool registry/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("registry: a silent package is named, not redacted to a placeholder", async () => {
+	// The label used to be built after stripping `npm:`, so redactSource saw a
+	// bare word and returned "(unparsable value)" — the one row this command
+	// exists for never said which package was quiet.
+	const root = tmpRoot();
+	installPkg(root, "quiet", { pi: { extensions: ["./index.js"] } }, ["index.js"]);
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:quiet"] });
+	const rows = byId(await registry.run(buildContext({ agentDir: root, pi: fakePi({ packages: ["npm:quiet"] }, []) })));
+	assert.equal(rows.silent.status, "warn");
+	assert.match(rows.silent.detail, /^quiet declared an extension/);
+	assert.doesNotMatch(rows.silent.detail, /unparsable/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: a settings.json that is valid JSON but not an object is named as that", async () => {
+	// `null` parses. Reporting it as "could not be inspected" contradicted the
+	// "valid JSON" row directly above it.
+	const root = tmpRoot();
+	fs.writeFileSync(path.join(root, "settings.json"), "null");
+	const cfg = byId(await config.run(buildContext({ agentDir: root })));
+	assert.equal(cfg["file:settings.json"].status, "ok");
+	assert.equal(cfg.duplicates.status, "warn");
+	assert.match(cfg.duplicates.detail, /valid JSON but not an object/);
+	const pkg = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(pkg.installed.status, "warn");
+	assert.match(pkg.installed.detail, /valid JSON but not an object/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: a settings.json that cannot be opened is not reported as missing", async () => {
+	// A directory in the file's place is the portable way to make readFileSync
+	// fail without depending on the test user's permissions (root ignores them).
+	const root = tmpRoot();
+	fs.mkdirSync(path.join(root, "settings.json"));
+	const cfg = byId(await config.run(buildContext({ agentDir: root })));
+	assert.equal(cfg["file:settings.json"].status, "warn");
+	assert.doesNotMatch(cfg["file:settings.json"].detail, /not found/);
+	assert.match(cfg["file:settings.json"].detail, /could not be inspected/);
+	const pkg = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(pkg.installed.status, "warn");
+	assert.doesNotMatch(pkg.installed.detail, /not found/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("network: a header fetch refuses to build is not a dead endpoint", async () => {
 	// `fetch` rejects on a header value containing a newline before any socket is
 	// opened. Reporting "unreachable" blamed the endpoint for a config fault.
@@ -1444,6 +1521,8 @@ test("network: a header fetch refuses to build is not a dead endpoint", async ()
 	assert.equal(rows.providers.status, "skip");
 	assert.match(rows.providers.detail, /not probed/);
 	assert.doesNotMatch(rows.providers.detail, /unreachable/);
+	// The value fetch rejected is the key: it must not be in the row.
+	assert.doesNotMatch(rows.providers.detail, /bad/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 

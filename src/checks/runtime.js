@@ -2,7 +2,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import net from "node:net";
-import { bareHost, curlProbe, exists, humanBytes, isWindows, proxyFromEnv, redactProxy, whichAll } from "../util.js";
+import { bareHost, curlProbe, exists, humanBytes, isMissing, isWindows, proxyFromEnv, redactProxy, whichAll } from "../util.js";
 
 export const group = "Runtime";
 
@@ -21,7 +21,7 @@ export async function run({ offline = false, agentDir: root, env = process.env }
 	// Without this row a container that never ran Pi reported "2 ok, 12 skipped"
 	// and a green verdict: every check had skipped, so nothing had been looked at,
 	// and the reader was told the install was fine.
-	if (root && !exists(root)) {
+	if (root && isMissing(root)) {
 		results.push({
 			group,
 			id: "agent-dir",
@@ -29,6 +29,17 @@ export async function run({ offline = false, agentDir: root, env = process.env }
 			status: "warn",
 			detail: `${root} does not exist — nothing about an install was inspected`,
 			hint: "Run `pi` once to create it, or set PI_CODING_AGENT_DIR to the directory your install uses.",
+		});
+	} else if (root && !exists(root)) {
+		// A directory this process cannot open is not a missing one, and "run pi
+		// once to create it" is the wrong advice for a permissions problem.
+		results.push({
+			group,
+			id: "agent-dir",
+			title: "agent dir",
+			status: "warn",
+			detail: `${root} exists but could not be opened — nothing about an install was inspected`,
+			hint: "A permissions or filesystem problem. Check ownership of the directory, or set PI_CODING_AGENT_DIR to the one your install uses.",
 		});
 	}
 
@@ -131,7 +142,11 @@ export async function run({ offline = false, agentDir: root, env = process.env }
 			id: "disk",
 			title: "disk",
 			status: "skip",
-			detail: `cannot stat ${root}: ${String(e?.message ?? e)}`,
+			// A bare errno is the least polished line a first run ever shows, and on a
+			// machine that never ran Pi it is the expected state, not an error.
+			detail: isMissing(root)
+				? "agent directory does not exist yet — no volume to report on"
+				: `cannot stat ${root}: ${String(e?.message ?? e)}`,
 		});
 	}
 

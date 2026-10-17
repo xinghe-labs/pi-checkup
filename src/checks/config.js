@@ -2,7 +2,7 @@
 // entries that silently cancel each other out?
 import fs from "node:fs";
 import path from "node:path";
-import { exists, makeRow, newestBackup, readJson, redactSource, sourceOf } from "../util.js";
+import { exists, isMissing, makeRow, newestBackup, readJson, redactSource, sourceOf } from "../util.js";
 
 export const group = "Config";
 
@@ -37,6 +37,7 @@ export async function run({
 	modelsFile,
 	projectSettingsFile = path.join(cwd ?? process.cwd(), ".pi", "settings.json"),
 	settings,
+	settingsLoaded,
 	settingsSource,
 	hasRuntime,
 	env = process.env,
@@ -55,7 +56,10 @@ export async function run({
 
 	// --- validity ----------------------------------------------------------
 	for (const { label, file, required } of files) {
-		if (!exists(file)) {
+		// `isMissing`, not `exists`: a permission-denied settings.json used to be
+		// reported as "not found — Pi is running on defaults", which is a claim
+		// about a file nobody managed to open.
+		if (isMissing(file)) {
 			// `skip` is this package's word for "there was nothing to inspect", used
 			// the same way in every other module. An absent optional file is that,
 			// not a pass: reporting it as ok made the same absence read as `ok` here
@@ -168,9 +172,14 @@ export async function run({
 		// already words them differently. One state should not get two explanations
 		// in one report.
 		let unreadable = false;
-		if (settings === undefined || settings === null) {
-			unreadable = Boolean(settingsFile) && exists(settingsFile);
+		if (!settingsLoaded) {
+			unreadable = Boolean(settingsFile) && !isMissing(settingsFile);
 			why = unreadable ? "settings.json could not be inspected" : "settings.json not found — nothing to compare";
+		} else if (settings === null || typeof settings !== "object" || Array.isArray(settings)) {
+			// Valid JSON, wrong shape. The row above says "valid JSON", so saying
+			// "could not be inspected" here contradicted it.
+			unreadable = true;
+			why = "settings.json is valid JSON but not an object";
 		} else if (packageList === undefined) why = "no package list in settings.json";
 		// A `packages` value that is present and not a list is a fault in the
 		// config, not an absence — packages.js reports the same value as `warn`,

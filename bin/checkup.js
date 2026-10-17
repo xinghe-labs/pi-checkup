@@ -105,6 +105,10 @@ async function main() {
 		return 0;
 	}
 
+	// `--yes` on its own reads as "apply the repairs" and does nothing. Say so
+	// rather than returning a normal report that silently ignored a flag.
+	if (opts.yes && !opts.fix) process.stderr.write("pi-checkup: --yes only means something with --fix\n");
+
 	const ctx = buildContext({ cwd: process.cwd(), offline: opts.offline });
 	const results = await runChecks(ctx);
 

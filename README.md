@@ -10,6 +10,9 @@ A health-check extension for [Pi](https://pi.dev). It inspects the *running* ses
 pi install npm:pi-checkup
 ```
 
+Start a new session afterwards (or run `/reload` in a running one): a package
+installed mid-session is not loaded until Pi re-reads its package list.
+
 Then, in a session:
 
 ```text
@@ -27,7 +30,7 @@ A Pi install accumulates packages. Each one registers tools, commands, hooks, an
 - A package is in `settings.json`, its directory exists, but its manifest points at a file that isn't there. It loaded nothing and logged nothing.
 - `ast-grep` ships a binary named `sg`. So does the shadow-utils package. Typing `sg` starts the wrong one.
 - A blocked `postinstall` left `node_modules/.bin/playwright` as a dangling symlink.
-- Your provider endpoint moved. The only symptom is a request that hangs 60 seconds later.
+- Your provider endpoint moved. The only symptom is a request that hangs, then fails.
 
 `pi list` prints paths. `pi --verbose` prints warnings you have to read line by line. Neither answers *"is my setup actually coherent right now?"*
 
@@ -98,7 +101,7 @@ Run `npx pi-checkup --verbose` to show what to do about each finding.
 ! 1 warning  ·  run /checkup inside Pi for registry checks
 ```
 
-Both captures below and above come from a real machine; free space, Node versions and which packages are installed are properties of that machine, not of the tool.
+Both captures below and above come from a real machine, taken with pi-checkup 0.1.0; free space, Node versions and which packages are installed are properties of that machine, not of the tool, and the row counts grow when checks are added.
 
 ## Real output
 
@@ -153,6 +156,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 |---|---|---|
 | **Registry** | Tool and command collisions | One extension silently stops being reachable; the later registration wins with no error |
 | | Silent packages | Declared an extension but registered no tool or command — either by design or a load failure |
+| | Loaded tools and commands | How many registered, split by extension and builtin, and how many distinct sources they came from |
 | | Attribution | Which package owns each of your tools and commands, by name |
 | **Packages** | Package list | Whether `settings.json` could be read at all — a hand-edited file that does not parse is reported as unreadable, not as "no packages" |
 | | Missing directories | In `settings.json` but gone from `node_modules`. A version pin (`npm:name@1.2.3`) is resolved to the directory it installs into, not taken as part of the name |
@@ -165,7 +169,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Malformed entries | A `packages` entry that is not a source string — `null`, a number, an object without `source` |
 | | Unreadable directories | A package directory that exists but cannot be listed, which is a permission problem rather than a missing install |
 | | Manifest shape | A `pi.extensions` entry that is not a string. The string entries are still checked; only the malformed ones are left out |
-| **Binaries** | Bin directory | Whether `.bin` could be listed at all — a missing `.bin` is a `skip` that still names the commands it should have held, an unreadable one is a warning |
+| **Binaries** | Bin directory | Whether `.bin` could be listed at all — a missing `.bin` is a `skip` that still says how many commands it should have held, an unreadable one is a warning |
 | | Dangling links | A symlink whose target is gone — a blocked `postinstall`, or an optional native dependency skipped for this platform. Only links are counted, so a Windows `.bin` of plain shim files reports `skip` instead of a green tick over nothing |
 | | Unreadable links | A link that exists but cannot be followed (permissions, a loop) — reported, not called broken |
 | | Install leftovers | `.<name>-<random>` staging links in `.bin`: an install is running right now, or was interrupted. Its own finding, not a broken package |
@@ -193,7 +197,7 @@ Only reversible repairs are automated, and inside a session it normally offers o
 2. **Collapse duplicate `packages` entries** in `settings.json`. Only byte-identical repeats are dropped: `"npm:a"` next to `{"source": "npm:a", "enabled": false}` carries different intent and is left alone.
 3. **Prune `packages` entries whose directory is gone** — the ones a reinstall did not bring back. Sources resolved by Pi itself (`git:`, `https:`) are never touched, and a prune that would remove every entry it can resolve is refused: that pattern means the agent directory is wrong, not that every package vanished.
 
-Repairs 2 and 3 rewrite `settings.json`, so they need a settings file checkup actually read. Inside a session Pi hands checkup the settings from the *running process*, not the file on disk, and checkup will not rewrite a file it never read — so `/checkup fix` in-session offers repair 1, plus the other two only when Pi could not supply the settings and checkup fell back to reading the file. Stop Pi and run the CLI to be sure:
+Repairs 2 and 3 rewrite `settings.json`, so they need a settings file checkup actually read. Inside a session Pi hands checkup the settings from the *running process*, not the file on disk, and checkup will not rewrite a file it never read — so `/checkup fix` in-session offers repair 1, plus the other two only when Pi returned no settings and checkup read the file itself. If `getSettings()` threw, the fallback is still unverified and neither rewrite is offered. Stop Pi and run the CLI to be sure:
 
 ```bash
 npx pi-checkup --fix --yes
@@ -226,7 +230,13 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
 
 ```json
 {
-  "summary": { "total": 24, "ok": 21, "warn": 1, "fail": 0, "skip": 2 },
+  "summary": {
+    "total": 24,
+    "ok": 21,
+    "warn": 1,
+    "fail": 0,
+    "skip": 2
+  },
   "version": "0.1.0",
   "node": "22.23.3",
   "platform": "linux",
@@ -261,7 +271,7 @@ Exit-worthy statuses are `fail`; `warn` means something is degraded but working.
 - **Non-blocking.** Every check runs concurrently, and every outbound call has its own timeout — 6s for a curl probe, 8s for a fetch probe, 4s for DNS, 3s for a TCP connect — under a 30s per-module backstop. A hung endpoint costs one timeout, or two when a configured proxy fails and the direct path is tried as well, and never the whole command.
 - **A crashing check is a finding, not a crash.** If a check module throws, the report says which one, marks it failed, and still shows everything else.
 - **A check with nothing to inspect says so.** `skip` means nothing was inspected — an absent optional config file, an empty `.bin`, a provider list with no host to resolve, or a row you suppressed with `PI_CHECKUP_IGNORE` (whose detail says what it replaced). Zero packages present reports `skip`, never a green tick over nothing, and the verdict counts them: `✓ 3 ok, 2 skipped` rather than a bare "all clear".
-- **Cross-platform.** Node built-ins only. `PATH` is resolved in-process against `PATHEXT` on Windows and the executable bit on POSIX, so a minimal container without `which` still works; `/dev/null` vs `NUL` for curl output, symlinked package stores, and path separators are handled. Checks that cannot run are marked skipped rather than failed.
+- **Cross-platform.** Node built-ins only. `PATH` is resolved in-process against `PATHEXT` on Windows and the executable bit on POSIX, so a minimal container without `which` still works; `/dev/null` vs `NUL` for curl output, symlinked package stores, and path separators are handled. A check that finds nothing to inspect is marked skipped rather than failed — but a check module that throws or runs past its 30s backstop is a failure, because something was supposed to be inspected and was not.
 - **Zero dependencies.** Nothing to audit, nothing to break on a Pi upgrade.
 
 ## Known limitations

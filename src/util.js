@@ -249,7 +249,10 @@ export function newestBackup(file) {
  * "pi-lens did this" instead of dumping an absolute path at the user.
  */
 export function ownerOf(sourcePath) {
-	if (!sourcePath) return "unknown";
+	// A registry entry is a third-party object: `sourceInfo.path` can be a number
+	// or an object, and calling `.startsWith` on it took the whole Registry group
+	// down as one crash row.
+	if (typeof sourcePath !== "string" || !sourcePath) return "unknown";
 	if (sourcePath.startsWith("builtin:")) return "builtin";
 	const normalized = sourcePath.replace(/\\/g, "/");
 	const marker = "/node_modules/";
@@ -623,8 +626,12 @@ export function redactSource(spec) {
 	if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return scrubCredentials(text);
 	// No scheme, but a path: `./ext/single.js` and `/opt/ext` are local sources
 	// with no credential in them, and hiding them made a real finding unreadable.
-	const pathLike =
-		!text.includes("@") && (/^(\.{0,2}\/|\/|~\/)/.test(text) || /^[a-z0-9._-]+(\/[a-z0-9._-]+)+$/i.test(text));
+	// Globs and scoped paths are sources too: `dist/*.js` and `./packages/@acme/ext`
+	// are what a manifest declares, and hiding them made an "entry files" finding
+	// unreadable. `@` is allowed only as a whole-segment prefix, so a
+	// `user:pass@host` (which has a colon) and a `user@host` stay out.
+	const segment = "@?[a-z0-9._*+!-]+";
+	const pathLike = new RegExp(`^(${segment})(\\/(${segment}))+$`, "i").test(text) || /^(\.{0,2}\/|\/|~\/)/.test(text);
 	if (pathLike) return scrubCredentials(text);
 	// Anything else is not a source. It may be a credential pasted into the wrong
 	// field — `sk-ant-…` in the packages array — and scrubCredentials only knows

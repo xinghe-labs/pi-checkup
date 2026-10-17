@@ -4,7 +4,7 @@
 // are installed, but only the running session knows which tools and commands
 // they really registered, under what names, and who lost a collision.
 import path from "node:path";
-import { normalizePath, ownerOf, readJson, redactSource, resolvePackageDir, sourceOf } from "../util.js";
+import { normalizePath, ownerOf, readJson, redactSource, resolvePackageDir, scrubCredentials, sourceOf } from "../util.js";
 
 export const group = "Registry";
 
@@ -84,7 +84,9 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					id: "tools",
 					title: "tools",
 					status: "warn",
-					detail: `could not read the tool registry (${toolsResult.error})`,
+					// Scrubbed: the rejection can quote a URL with a token in it, and this
+				// detail goes to the terminal, the notification and --json.
+				detail: `could not read the tool registry (${scrubCredentials(toolsResult.error)})`,
 					hint: "The Pi API may have changed, or an extension failed mid-load. Run `pi --verbose`.",
 				},
 	);
@@ -108,7 +110,7 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 			id: "commands",
 			title: "commands",
 			status: "warn",
-			detail: `could not read the command registry (${commandsResult.error})`,
+			detail: `could not read the command registry (${scrubCredentials(commandsResult.error)})`,
 			hint: "The Pi API may have changed, or an extension failed mid-load. Run `pi --verbose`.",
 		});
 	}
@@ -250,9 +252,9 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					id: "silent",
 					title: "silent packages",
 					status: "warn",
-					// A source can be a URL with userinfo in it, and this list is the only
-					// place a source reaches the report from this module.
-					detail: `${silent.map(redactSource).join(", ")} declared an extension but registered no tool or command`,
+					// Already redacted where the label was built, with the scheme still
+					// attached; re-redacting a bare name would erase it.
+					detail: `${silent.join(", ")} declared an extension but registered no tool or command`,
 					hint: "May be event-only by design, or may have failed to load. Restart `pi --verbose` to see extension load errors.",
 				}
 			: { group, id: "silent", title: "silent packages", status: "ok", detail: "none" },
@@ -319,7 +321,11 @@ function declaredPackages(settings, root) {
 		// registered no tool or command" for a package that declared none.
 		else if (!declared) count = 0;
 		if (!count) continue;
-		out.push({ label: source.replace(/^npm:/, ""), dir: normalizePath(dir) });
+		// Redacted while the scheme is still attached: `redactSource` can only
+		// recognise a source by its scheme or path shape, so stripping `npm:`
+		// first turned every bare package name into "(unparsable value)" in the
+		// one row a user runs this command to read.
+		out.push({ label: redactSource(source).replace(/^npm:/, ""), dir: normalizePath(dir) });
 	}
 	return out;
 }

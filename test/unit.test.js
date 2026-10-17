@@ -14,11 +14,11 @@ import {
 	newestBackup,
 	ownerOf,
 	readJson,
+	redactSource,
 	pinnedVersion,
 	curlArgs,
 	curlConfig,
 	curlProbe,
-	redactSource,
 	redactUrl,
 	resolvePackageDir,
 	sameCommand,
@@ -359,6 +359,26 @@ test("resolvePackageDir drops a version pin but keeps the scope", () => {
 	assert.equal(resolvePackageDir("npm:@scope/pkg@^2", root), path.join(root, "npm", "node_modules", "@scope", "pkg"));
 	assert.equal(resolvePackageDir("npm:@scope/pkg", root), path.join(root, "npm", "node_modules", "@scope", "pkg"));
 	assert.equal(resolvePackageDir("npm:pkg@latest", root), path.join(root, "npm", "node_modules", "pkg"));
+});
+
+test("redactSource keeps a glob and a scoped path", () => {
+	// A manifest entry is a glob, and a scoped local package has an `@` segment.
+	// Both used to come back as "(unparsable value)", which made the finding that
+	// named them useless.
+	assert.equal(redactSource("dist/*.js"), "dist/*.js");
+	assert.equal(redactSource("./packages/@acme/ext"), "./packages/@acme/ext");
+	assert.equal(redactSource("@scope/pkg"), "@scope/pkg");
+	// Still not a source: userinfo, and a bare word that could be a token.
+	assert.equal(redactSource("user@host/path"), "(unparsable value)");
+	assert.equal(redactSource("sk-live-pasted"), "(unparsable value)");
+});
+
+test("ownerOf survives a registry entry that is not a path", () => {
+	// `sourceInfo.path` comes from a third-party extension: a number there used to
+	// throw out of the Registry group and collapse it into one crash row.
+	assert.equal(ownerOf(42), "unknown");
+	assert.equal(ownerOf({ path: "/x" }), "unknown");
+	assert.equal(ownerOf(null), "unknown");
 });
 
 test("readJson reports a parse failure without quoting the file", () => {
