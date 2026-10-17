@@ -17,13 +17,16 @@ function interpolatedFields(models) {
 	const out = [];
 	const providers = models?.providers ?? models ?? {};
 	if (!providers || typeof providers !== "object") return out;
-	for (const provider of Object.values(providers)) {
+	for (const [name, provider] of Object.entries(providers)) {
 		if (!provider || typeof provider !== "object") continue;
+		// The provider name travels with the value: "referenced but unset: FOO"
+		// without one leaves the reader to grep models.json for the variable before
+		// they can tell which provider is about to fail.
 		const key = provider.apiKey ?? provider.api_key;
-		if (typeof key === "string") out.push(key);
+		if (typeof key === "string") out.push({ provider: name, value: key });
 		if (provider.headers && typeof provider.headers === "object") {
 			for (const value of Object.values(provider.headers)) {
-				if (typeof value === "string") out.push(value);
+				if (typeof value === "string") out.push({ provider: name, value });
 			}
 		}
 	}
@@ -101,7 +104,12 @@ export async function run({
 			detail = `${file}: ${parsed.error}`;
 			// The full path, not the basename: a user reading this from another
 			// directory cannot find a bare filename.
-			hint = backup ? `A backup exists at ${backup}. Run \`${fixCommand}\` to restore it.` : "No backup found; fix it by hand.";
+			// The parse error names a line and a column, so the hint can point at the
+			// file rather than at nothing: "fix it by hand" with no location left the
+			// reader to bisect a 40 KB models.json by eye.
+			hint = backup
+				? `A backup exists at ${backup}. Run \`${fixCommand}\` to restore it.`
+				: `No backup to restore. Open ${file} at the line in the message above and fix the syntax — a trailing comma or an unquoted value is the usual cause.`;
 		}
 		const restorable = corrupt && Boolean(backup);
 		results.push(
@@ -146,8 +154,12 @@ export async function run({
 					? `${backedUp} file(s) backed up; edited since the newest backup: ${stale.join(", ")}`
 					: `${backedUp} file(s) backed up`,
 				{
+					// The named path is the point: "copy it somewhere safe" with no `it` left
+					// the reader to work out which file the paragraph was about.
 					hint: stale.length
-						? "That state cannot be rolled back to, so copy it somewhere safe before the next edit."
+						? `The current ${stale.join(" and ")} cannot be rolled back to, because both backups are older. Copy ${stale
+								.map((label) => files.find((f) => f.label === label)?.file ?? label)
+								.join(" and ")} somewhere you can restore from before the next edit.`
 						: undefined,
 				},
 			),
@@ -264,8 +276,9 @@ export async function run({
 		);
 	} else {
 		const missing = new Set();
+		const owners = new Set();
 		let references = 0;
-		for (const value of interpolatedFields(models.data)) {
+		for (const { provider, value } of interpolatedFields(models.data)) {
 			for (const [, braced, bare] of value.matchAll(ENV_REF)) {
 				const name = braced ?? bare;
 				if (!name) continue;
@@ -274,7 +287,10 @@ export async function run({
 				// `FOO=""` counts as unset rather than as set.
 				// Object.hasOwn, not a truthiness read: `"${constructor}"` resolved
 				// through the prototype chain and was reported as set.
-				if (!Object.hasOwn(env, name) || !env[name]) missing.add(name);
+				if (!Object.hasOwn(env, name) || !env[name]) {
+					missing.add(name);
+					owners.add(provider);
+				}
 			}
 		}
 		if (!references) {
@@ -283,7 +299,9 @@ export async function run({
 			results.push(
 				missing.size
 					? row("env", "env references", "warn", `referenced but unset: ${truncateList(missing, 6)}`, {
-							hint: "Export them before starting Pi, or the provider that needs them will fail at request time.",
+							// Which provider, and where to put the variable: "export them before
+							// starting Pi" is advice only if the reader already knows both.
+							hint: `${owners.size ? `Named in ${truncateList([...owners], 3)}. ` : ""}Add it to the shell profile Pi starts from (or your .env), then start Pi again — a missing value fails at request time, not at load.`,
 						})
 					: row("env", "env references", "ok", `${references} reference(s) all set`),
 			);

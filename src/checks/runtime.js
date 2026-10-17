@@ -31,6 +31,37 @@ function launcherHint(status, found) {
 	return "No Pi launcher was found. This report describes the files on disk; install Pi or run it from the directory that has one.";
 }
 
+/**
+ * The directory the free-space figure belongs to.
+ *
+ * `statfs` reports the filesystem holding the path, so on a machine with a
+ * separate /home or a mounted workspace the number under "disk" is not the
+ * number for `/`. Walking up while `dev` stays the same finds the mount root —
+ * the same thing `df` prints — and a path that cannot be stat'ed falls back to
+ * the filesystem root rather than dropping the row.
+ */
+function mountPointOf(target) {
+	if (!target) return path.parse(process.cwd()).root;
+	if (isWindows) return path.parse(target).root;
+	let dir = path.resolve(target);
+	let dev;
+	try {
+		dev = fs.statSync(dir).dev;
+	} catch {
+		return path.parse(dir).root;
+	}
+	for (;;) {
+		const up = path.dirname(dir);
+		if (up === dir) return dir;
+		try {
+			if (fs.statSync(up).dev !== dev) return dir;
+		} catch {
+			return dir;
+		}
+		dir = up;
+	}
+}
+
 export async function run({ offline = false, agentDir: root, env = process.env, agentDirExplicit = false } = {}) {
 	const results = [];
 
@@ -155,7 +186,7 @@ export async function run({ offline = false, agentDir: root, env = process.env, 
 				id: "disk",
 				title: "disk",
 				status: "skip",
-				detail: `${humanBytes(free)} free; this filesystem does not report a capacity`,
+				detail: `${humanBytes(free)} free on ${mountPointOf(root)}; this filesystem does not report a capacity`,
 			});
 		} else {
 			results.push(
@@ -165,10 +196,13 @@ export async function run({ offline = false, agentDir: root, env = process.env, 
 							id: "disk",
 							title: "disk",
 							status: "fail",
-							detail: `${usedPct}% used, ${humanBytes(free)} free`,
+							detail: `${usedPct}% used on ${mountPointOf(root)}, ${humanBytes(free)} free`,
 							hint: "Session files and package installs both fail when the volume fills up.",
 						}
-					: { group, id: "disk", title: "disk", status: "ok", detail: `${usedPct}% used, ${humanBytes(free)} free` },
+					: // The volume, not just a percentage: the report is scoped to one agent
+						// directory, and "6% used" on a machine with three mounted disks left
+						// the reader to guess which one had to have room.
+						{ group, id: "disk", title: "disk", status: "ok", detail: `${usedPct}% used on ${mountPointOf(root)}, ${humanBytes(free)} free` },
 			);
 		}
 	} catch (e) {

@@ -19,7 +19,7 @@ Then, in a session:
 /checkup            run every check
 /checkup verbose    same, plus what to do about each finding
 /checkup json       machine-readable report
-/checkup fix        apply the safe repairs (asks first)
+/checkup fix        apply the available repairs (asks first)
 ```
 
 ## The problem
@@ -38,12 +38,14 @@ A Pi install accumulates packages. Each one registers tools, commands, hooks, an
 
 The in-session command is useless in the one case you need it most: Pi is installed but will not boot. The same checks also ship as a CLI that needs no session, no Pi, and no `node_modules` — which is also what you want in CI, or on a machine you are about to hand over.
 
+One difference to know before you read the first CLI report: the registry section — collisions, silent packages, attribution — is read from the live process, so the CLI marks it skipped. Everything else runs without a session: packages, binaries, network, config, runtime. On a machine where Pi has never been started, most rows have nothing to inspect and say so rather than passing.
+
 ```bash
 npx pi-checkup              # full report
 npx pi-checkup --verbose    # same report, plus the hint under every finding
 npx pi-checkup --offline    # skip every network probe
 npx pi-checkup --json       # for scripts
-npx pi-checkup --fix        # list the safe repairs
+npx pi-checkup --fix        # list the available repairs
 npx pi-checkup --fix -y     # apply them (nothing is written without -y)
 npx pi-checkup --version    # print the version
 npx pi-checkup --help       # every flag and exit code
@@ -92,7 +94,7 @@ Config
 Runtime
   ✓ node               v22.23.3
   ✓ pi launcher        /root/.pi/agent/bin/pi
-  ✓ disk               6% used, 950.7 GB free
+  ✓ disk               6% used on /, 950.7 GB free
   ✓ proxy              http://127.0.0.1:10808 accepting connections
 
 19 checks: 14 ok, 1 warning, 0 failed, 4 skipped
@@ -141,7 +143,7 @@ Config
 Runtime
   ✓ node               v22.23.3
   ✓ pi launcher        /root/.pi/agent/bin/pi
-  ✓ disk               6% used, 950.7 GB free
+  ✓ disk               6% used on /, 950.7 GB free
   ✓ proxy              http://127.0.0.1:10808 accepting connections
 
 24 checks: 20 ok, 1 warning, 0 failed, 3 skipped

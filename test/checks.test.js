@@ -781,6 +781,37 @@ test("packages: a pin that does not match the disk is a warning", async () => {
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("config: a corrupt file with no backup says where to look", async () => {
+	// "No backup found; fix it by hand." is advice without a location. The parse
+	// error now carries a line and a column, so the hint can name the file those
+	// numbers refer to.
+	const root = tmpRoot();
+	fs.writeFileSync(path.join(root, "models.json"), '{\n  "providers": {\n    "me": {"apiKey": "x",},\n  },\n}\n');
+	const rows = byId(await config.run(buildContext({ agentDir: root })));
+	assert.equal(rows["file:models.json"].status, "fail");
+	assert.match(rows["file:models.json"].detail, /line \d+, column \d+/);
+	assert.match(rows["file:models.json"].hint, /models\.json/);
+	assert.match(rows["file:models.json"].hint, /line in the message/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("config: an unset env reference names the provider that needs it", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), {
+		providers: {
+			work: { baseUrl: "https://api.example.com/v1", apiKey: "${WORK_KEY}" },
+			home: { baseUrl: "https://x.example.com/v1", apiKey: "${HOME_KEY}" },
+		},
+	});
+	const rows = byId(await config.run(buildContext({ agentDir: root, env: {} })));
+	assert.equal(rows.env.status, "warn");
+	assert.match(rows.env.detail, /WORK_KEY/);
+	assert.match(rows.env.hint, /work/);
+	assert.match(rows.env.hint, /\.env|shell profile/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("packages: a version string is scrubbed before it is cut, not after", async () => {
 	// The detail truncates the installed version at 40 characters. Cutting first
 	// put the `@` of a `https://user:pass@host` version past the cut, so

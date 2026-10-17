@@ -14,7 +14,7 @@ const USAGE = [
 	"/checkup            run every check",
 	"/checkup verbose    run every check and show how to fix each finding",
 	"/checkup json       print the report as JSON",
-	"/checkup fix        apply the safe repairs (asks first)",
+	"/checkup fix        apply the available repairs (asks first)",
 	"",
 	"Suppress rows you have accepted with PI_CHECKUP_IGNORE=id,Group:id,title",
 ].join("\n");
@@ -67,7 +67,7 @@ export default function checkupExtension(pi) {
 
 			const summary = fixable.map((r) => `  • ${r.title}: ${r.detail}`).join("\n");
 			const approved = await ctx.ui.confirm(
-				`Apply ${fixable.length} safe repair(s)?`,
+				`Apply ${fixable.length} repair(s)? A backup is written first.`,
 				`${summary}\n\nEvery file is backed up before it is written.`,
 			);
 			if (!approved) {

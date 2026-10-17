@@ -56,6 +56,17 @@ test("a zero-block filesystem does not report NaN% used", async () => {
 	}
 });
 
+test("the disk row names the volume the free space belongs to", async () => {
+	// `statfs` describes the filesystem holding the agent directory, which on a
+	// machine with a separate /home or a mounted workspace is not the one the
+	// reader assumes. A bare "6% used" left them guessing which disk to clear.
+	const rows = await runtime.run({ agentDir: tmp(), env: {} });
+	const disk = rows.find((r) => r.id === "disk");
+	if (disk.status === "skip") return; // an exotic filesystem; nothing to name
+	assert.match(disk.detail, /% used on \//);
+	assert.match(disk.detail, / free$/);
+});
+
 test("a proxy that is not listening fails rather than passing silently", async () => {
 	const dir = tmp();
 	// Port 1 on loopback is reserved and never listening.

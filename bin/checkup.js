@@ -25,7 +25,7 @@ Options
   -v, --verbose    show how to fix each finding
       --json       print the report as JSON
       --offline    skip every network probe
-      --fix        list the safe repairs, and apply them with --yes
+      --fix        list the available repairs, and apply them with --yes
   -y, --yes        apply the repairs instead of only listing them
   -h, --help       show this help
       --version    print the version
@@ -149,7 +149,7 @@ async function main() {
 		if (!fixable.length) {
 			process.stdout.write("\nNothing to repair automatically.\n");
 		} else if (!opts.yes) {
-			process.stdout.write(`\n${fixable.length} safe repair(s) available:\n`);
+			process.stdout.write(`\n${fixable.length} repair(s) available — each rewrites a config file after backing it up:\n`);
 			for (const f of fixable) process.stdout.write(`  • ${f.title}: ${f.detail}\n`);
 			process.stdout.write("\nRe-run with --fix --yes to apply them. Every file is backed up first.\n");
 		} else {
