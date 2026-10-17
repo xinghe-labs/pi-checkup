@@ -46,13 +46,23 @@ test("newestBackup picks the latest sibling backup", () => {
 	fs.writeFileSync(target, "{}");
 	assert.equal(newestBackup(target), null);
 
-	fs.writeFileSync(`${target}.bak`, "{}");
-	fs.writeFileSync(`${target}.checkup-bak-2026-01-02T03-04-05`, "{}");
-	assert.equal(newestBackup(target), `${target}.checkup-bak-2026-01-02T03-04-05`);
+	const older = `${target}.checkup-bak-2026-01-02T03-04-05`;
+	const newer = `${target}.bak`;
+	fs.writeFileSync(older, "{}");
+	fs.writeFileSync(newer, "{}");
+	// Ordering is by mtime, not by name: a repair backup carries a timestamp that
+	// always sorts after a plain .bak, so a name sort would pin the choice to the
+	// repair backup forever and never surface the newer one. Setting the mtimes
+	// explicitly is the only way to prove which rule is actually in force.
+	const later = new Date(Date.now() + 60_000);
+	fs.utimesSync(newer, later, later);
+	const earlier = new Date(Date.now() - 60_000);
+	fs.utimesSync(older, earlier, earlier);
+	assert.equal(newestBackup(target), newer);
 
 	// A file that merely shares the prefix must not be mistaken for a backup.
 	fs.writeFileSync(`${target}.broken`, "{}");
-	assert.equal(newestBackup(target), `${target}.checkup-bak-2026-01-02T03-04-05`);
+	assert.equal(newestBackup(target), newer);
 
 	fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -96,7 +106,11 @@ test("toJson drops internal fix metadata", () => {
 });
 
 test("renderVerdict prefers the worst status", () => {
-	assert.equal(renderVerdict([{ status: "ok" }, { status: "skip" }]), "✓ all clear");
+	// "all clear" over a report where part of it was never checked is the exact
+	// false confidence this package exists to remove, so the skip count shows.
+	assert.equal(renderVerdict([{ status: "ok" }, { status: "skip" }]), "✓ 1 ok, 1 skipped");
+	assert.equal(renderVerdict([{ status: "ok" }, { status: "ok" }]), "✓ all clear");
+	assert.equal(renderVerdict([{ status: "skip" }, { status: "skip" }]), "· nothing verified (2 skipped)");
 	assert.equal(renderVerdict([{ status: "ok" }, { status: "warn" }]), "! 1 warning");
 	assert.equal(renderVerdict([{ status: "warn" }, { status: "warn" }]), "! 2 warnings");
 	assert.equal(renderVerdict([{ status: "warn" }, { status: "fail" }]), "✗ 1 failed");
@@ -137,24 +151,23 @@ test("summarize counts an unknown status as a failure", () => {
 
 test("a title longer than the title column keeps the detail aligned", () => {
 	const long = "a-very-long-check-name-that-cannot-fit";
-	const report = renderReport(
-		[
-			{ group: "Config", id: "a", title: long, status: "ok", detail: "one two three four five six seven eight nine ten" },
-			{ group: "Config", id: "b", title: "short", status: "ok", detail: "x" },
-		],
-		{ width: 40 },
-	);
-	const lines = report.split("\n");
-	// The title itself is never truncated -- it is the identifier the user needs
-	// to look up -- so it gets a line of its own and the detail starts on the
-	// next one, at the same column every other wrapped line uses.
-	const titleLine = lines.findIndex((l) => l.includes(long));
-	assert.ok(titleLine >= 0, report);
-	const detailLines = lines.slice(titleLine + 1, titleLine + 4);
-	assert.ok(detailLines[0].startsWith(" ".repeat(4 + 8 + 1)), report);
-	// Every wrapped line after the first fits the requested width.
-	for (const line of detailLines) assert.ok(line.length <= 40, `over 40: ${line}`);
-	assert.match(report, /\n {2}✓ short +x/);
+	const rows = [
+		{ group: "Config", id: "a", title: long, status: "ok", detail: "one two three four five six seven eight nine ten" },
+		{ group: "Config", id: "b", title: "short", status: "ok", detail: "x" },
+	];
+	const wide = renderReport(rows, { width: 80 }).split("\n");
+	// At a normal width the title is never touched: it is the identifier the user
+	// needs to look the check up by.
+	assert.ok(wide.some((l) => l.includes(long)), wide.join("\n"));
+
+	const narrow = renderReport(rows, { width: 40 }).split("\n");
+	// Narrower than the title: the name may wrap, but nothing may overflow, and the
+	// detail must still start at the column every other wrapped line uses.
+	for (const line of narrow) assert.ok(line.length <= 40, `over 40: ${line}`);
+	const joined = narrow.join("").replace(/\s+/g, "");
+	assert.ok(joined.includes(long.replace(/\s+/g, "")), "the title was truncated rather than wrapped");
+	assert.ok(narrow.some((l) => l.trimStart().startsWith("one two three")), narrow.join("\n"));
+	assert.match(renderReport(rows, { width: 80 }), /\n {2}✓ short +x/);
 });
 
 test("isLoopbackHost recognises IPv6 literals with and without brackets", () => {
@@ -181,4 +194,21 @@ test("sourceOf reads both settings entry shapes and ignores junk", () => {
 	assert.equal(sourceOf(null), null);
 	assert.equal(sourceOf(42), null);
 	assert.equal(sourceOf({ source: 42 }), null);
+});
+
+test("no rendered line exceeds the requested width", () => {
+	// The report is read in a terminal split down the middle as often as not, and
+	// a line that wraps on its own breaks the column alignment that makes it
+	// scannable.
+	const rows = [
+		{ group: "Registry", id: "a", title: "attribution", status: "ok", detail: "x".repeat(200) },
+		{ group: "Binaries", id: "b", title: "a-title-that-is-much-longer-than-the-column", status: "warn", detail: "short", hint: "y".repeat(200) },
+		{ group: "Config", id: "c", title: "env", status: "fail", detail: "z".repeat(50), hint: "h".repeat(300) },
+	];
+	for (const width of [40, 60, 80, 120]) {
+		const report = renderReport(rows, { verbose: true, width });
+		for (const line of report.split("\n")) {
+			assert.ok(line.length <= width, `width ${width}: ${line.length} cols: ${line}`);
+		}
+	}
 });

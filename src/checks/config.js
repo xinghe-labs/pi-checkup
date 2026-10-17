@@ -30,7 +30,7 @@ function interpolatedFields(models) {
 	return out;
 }
 
-export async function run({ cwd, agentDir: root, settingsFile, modelsFile, settings, settingsSource, hasRuntime }) {
+export async function run({ cwd, agentDir: root, settingsFile, modelsFile, settings, settingsSource, hasRuntime, env = process.env }) {
 	const results = [];
 	/** One finding row, so the checks below stay flat and readable. */
 	const row = (id, title, status, detail, extra = {}) => ({ group, id, title, status, detail, ...extra });
@@ -47,15 +47,15 @@ export async function run({ cwd, agentDir: root, settingsFile, modelsFile, setti
 	// --- validity ----------------------------------------------------------
 	for (const { label, file, required } of files) {
 		if (!exists(file)) {
-			// An optional file that is simply absent is not a finding worth a line in
-			// a clean report, so it reads as ok rather than skipped.
-			results.push(
-				required
-					? row(`file:${label}`, label, "fail", `${file} not found`, {
-							hint: "Run `pi` once to generate it.",
-						})
-					: row(`file:${label}`, label, "ok", "none"),
-			);
+			// `skip` is this package's word for "there was nothing to inspect", used
+			// the same way in every other module. An absent optional file is that,
+			// not a pass: reporting it as ok made the same absence read as `ok` here
+			// and `skip` in packages.js for no reason a reader could recover.
+			if (required) {
+				results.push(row(`file:${label}`, label, "fail", `${file} not found`, { hint: "Run `pi` once to generate it." }));
+			} else {
+				results.push(row(`file:${label}`, label, "skip", "none"));
+			}
 			continue;
 		}
 		const parsed = readJson(file);
@@ -162,7 +162,7 @@ export async function run({ cwd, agentDir: root, settingsFile, modelsFile, setti
 				references++;
 				// An exported-but-empty variable is not usable as a credential, so
 				// `FOO=""` counts as unset rather than as set.
-				if (!process.env[name]) missing.add(name);
+				if (!env[name]) missing.add(name);
 			}
 		}
 		if (!references) {

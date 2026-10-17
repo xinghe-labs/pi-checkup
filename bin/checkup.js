@@ -49,7 +49,14 @@ Exit codes
 snapshot, and a repair changes what the snapshot describes.
 
 The registry section needs a running Pi session; use /checkup inside Pi to
-audit loaded tools and commands.`;
+audit loaded tools and commands.
+
+Environment
+  PI_CODING_AGENT_DIR    agent directory to inspect (default: ~/.pi/agent)
+  PI_CHECKUP_IGNORE      comma-separated rows to downgrade to skipped, by id,
+                         Group:id, or title (e.g. "unreachable,Config:env")
+  PI_CHECKUP_PROBE_URL   opt in to a real forwarding test through the proxy
+  https_proxy            tested for reachability; never printed with credentials`;
 
 function parseArgs(argv) {
 	const opts = { verbose: false, json: false, offline: false, fix: false, yes: false, help: false, version: false };

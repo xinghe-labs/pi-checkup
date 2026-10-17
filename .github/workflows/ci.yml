@@ -76,3 +76,29 @@ jobs:
           npm pack --dry-run 2>&1 | tee pack.log
           grep -q 'src/index.js' pack.log
           grep -q 'bin/checkup.js' pack.log
+      # A file list is not proof that the published artifact works: a missing
+      # relative import or a files[] entry that drops a module shows up only when
+      # the tarball is unpacked and executed.
+      - name: Packed tarball actually runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack 2>/dev/null
+          tarball=$(ls pi-checkup-*.tgz)
+          root=$(mktemp -d)
+          cd "$root"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "$OLDPWD/$tarball" >/dev/null
+          version=$(./node_modules/.bin/pi-checkup --version)
+          echo "packed CLI reports $version"
+          mkdir -p agent
+          printf '%s' '{"packages":[]}' > agent/settings.json
+          # A fresh install with an empty package list must not be reported as a
+          # broken config, and must produce a full report.
+          PI_CODING_AGENT_DIR="$root/agent" ./node_modules/.bin/pi-checkup --offline --json > report.json
+          node -e "
+          const r = require('./report.json');
+          if (r.summary.total !== r.checks.length) throw new Error('summary disagrees with checks');
+          if (r.summary.fail !== 0) throw new Error('fresh install reported failures: ' + JSON.stringify(r.checks.filter(c => c.status === 'fail')));
+          console.log('packed CLI report ok:', JSON.stringify(r.summary));
+          "

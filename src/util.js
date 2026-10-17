@@ -102,7 +102,9 @@ export function readJson(file) {
 	try {
 		return { ok: true, data: JSON.parse(raw), raw };
 	} catch (e) {
-		return { ok: false, error: String(e?.message ?? e).slice(0, 160) };
+		// `invalid` marks a genuine parse failure, which is a different problem from
+		// a file that is missing or too large to read.
+		return { ok: false, invalid: true, error: String(e?.message ?? e).slice(0, 160) };
 	}
 }
 

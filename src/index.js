@@ -14,6 +14,8 @@ const USAGE = [
 	"/checkup verbose    run every check and show how to fix each finding",
 	"/checkup json       print the report as JSON",
 	"/checkup fix        apply the safe repairs (asks first)",
+	"",
+	"Suppress rows you have accepted with PI_CHECKUP_IGNORE=id,Group:id,title",
 ].join("\n");
 
 export default function checkupExtension(pi) {

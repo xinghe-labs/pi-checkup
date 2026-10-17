@@ -116,11 +116,21 @@ test("buildContext prefers the running session over the settings file", () => {
 });
 
 test("buildContext falls back to the settings file without a session", () => {
-	const ctx = buildContext({});
+	// A temp root, never the developer's ~/.pi/agent: a suite whose result depends
+	// on the machine it runs on cannot be a gate.
+	const root = tmp();
+	fs.writeFileSync(path.join(root, "settings.json"), JSON.stringify({ packages: ["npm:from-file"] }));
+	const ctx = buildContext({ agentDir: root });
 	assert.equal(ctx.hasRuntime, false);
 	assert.equal(ctx.pi, null);
-	// Whatever the file holds, the source must not claim to be the runtime.
-	assert.notEqual(ctx.settingsSource, "runtime");
+	assert.equal(ctx.agentDir, root);
+	assert.equal(ctx.settingsSource, "file");
+	assert.deepEqual(ctx.settings.packages, ["npm:from-file"]);
+	// Checks read the environment through the context so a test can describe a
+	// proxy without mutating process.env.
+	assert.equal(ctx.env, process.env);
+	assert.deepEqual(buildContext({ agentDir: root, env: { https_proxy: "x" } }).env, { https_proxy: "x" });
+	fs.rmSync(root, { recursive: true, force: true });
 });
 
 // --- durability ----------------------------------------------------------
@@ -262,5 +272,35 @@ test("a repair preserves the file mode", async () => {
 	applyDedupePackages(file);
 	// A 0600 models.json must not come back 0644 through the rename.
 	assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a symlinked config is repaired in place, not replaced by a regular file", () => {
+	// Dotfiles installs keep settings.json as a symlink into a repo. Renaming over
+	// the link would silently detach the config from the file the user edits.
+	const dir = tmp();
+	const real = path.join(dir, "dotfiles-settings.json");
+	const link = path.join(dir, "settings.json");
+	fs.writeFileSync(real, JSON.stringify({ packages: ["npm:a", "npm:a"] }, null, 2));
+	fs.symlinkSync(real, link);
+
+	const result = applyDedupePackages(link);
+	assert.equal(result.ok, true);
+	assert.ok(fs.lstatSync(link).isSymbolicLink(), "the symlink was replaced by a regular file");
+	assert.deepEqual(JSON.parse(fs.readFileSync(real, "utf8")).packages, ["npm:a"]);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a failed write leaves no temp file behind", () => {
+	const dir = tmp();
+	const missing = path.join(dir, "nope", "settings.json");
+	const result = applyDedupePackages(missing);
+	// The message must name the real problem: "not valid JSON" for a path that
+	// does not exist sends the reader hunting for a syntax error.
+	assert.equal(result.ok, false);
+	assert.match(result.message, /does not exist/);
+	assert.doesNotMatch(result.message, /valid JSON/);
+	const leftovers = fs.readdirSync(dir).filter((n) => n.includes("checkup-tmp-"));
+	assert.deepEqual(leftovers, []);
 	fs.rmSync(dir, { recursive: true, force: true });
 });

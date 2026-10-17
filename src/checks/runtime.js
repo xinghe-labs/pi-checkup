@@ -9,7 +9,7 @@ export const group = "Runtime";
 
 const MIN_NODE_MAJOR = 20;
 
-export async function run({ offline = false, agentDir: root } = {}) {
+export async function run({ offline = false, agentDir: root, env = process.env } = {}) {
 	const results = [];
 
 	// --- node --------------------------------------------------------------
@@ -65,7 +65,9 @@ export async function run({ offline = false, agentDir: root } = {}) {
 	// --- disk --------------------------------------------------------------
 	try {
 		const stats = fs.statfsSync(root);
-		const free = Number(stats.bavail) * Number(stats.bsize);
+		// Guarded separately from blocks: a mock or an exotic filesystem can report
+		// a block count without a block size, and NaN B free reads as a bug.
+		const free = Number(stats.bavail) * Number(stats.bsize) || 0;
 		// blocks is 0 on some virtual filesystems; 1 - 0/0 is NaN, which used to
 		// sail past the threshold check and print "NaN% used" as a green tick.
 		const blocks = Number(stats.blocks);
@@ -109,7 +111,7 @@ export async function run({ offline = false, agentDir: root } = {}) {
 	// the only version of this check that matches the promise that pi-checkup
 	// generates no traffic of its own. Set PI_CHECKUP_PROBE_URL to opt into a
 	// real end-to-end forwarding test through the proxy.
-	const proxy = process.env.https_proxy || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.http_proxy;
+	const proxy = env.https_proxy || env.HTTPS_PROXY || env.HTTP_PROXY || env.http_proxy;
 	if (!proxy) {
 		results.push({ group, id: "proxy", title: "proxy", status: "skip", detail: "none configured" });
 	} else if (offline) {
@@ -121,14 +123,13 @@ export async function run({ offline = false, agentDir: root } = {}) {
 			detail: `configured (${redactProxy(proxy)}); not tested in offline mode`,
 		});
 	} else {
-		results.push(await checkProxy(proxy));
+		results.push(await checkProxy(proxy, env));
 	}
 
 	return results;
 }
 
 const DEFAULT_PROXY_PORT = { "http:": 80, "https:": 443, "socks5:": 1080, "socks5h:": 1080, "socks4:": 1080 };
-
 /**
  * A proxy URL safe to put in a report.
  *
@@ -148,8 +149,10 @@ export function redactProxy(raw) {
 		try {
 			const url = new URL(text);
 			if (url.hostname) {
-				const port = url.port || DEFAULT_PROXY_PORT[url.protocol] || "";
-				return `${url.protocol}//${url.hostname}${port ? `:${port}` : ""}`;
+				// Only the port the user actually wrote: printing a default :443 next to
+				// a URL that has no port makes the report disagree with the config the
+				// user is looking at, which is the one thing this string is for.
+				return `${url.protocol}//${url.hostname}${url.port ? `:${url.port}` : ""}`;
 			}
 		} catch {
 			// Fall through to the textual scrub below.
@@ -162,7 +165,7 @@ export function redactProxy(raw) {
 }
 
 /** Does something accept connections at this proxy's own address? */
-async function checkProxy(proxy) {
+async function checkProxy(proxy, env = process.env) {
 	const shown = redactProxy(proxy);
 	const row = (status, detail, hint) => ({ group, id: "proxy", title: "proxy", status, detail, hint });
 	let parsed;
@@ -178,7 +181,7 @@ async function checkProxy(proxy) {
 
 	// Opt-in end-to-end test: an explicit probe URL means the user asked for
 	// real traffic through the proxy.
-	const probeUrl = process.env.PI_CHECKUP_PROBE_URL;
+	const probeUrl = env.PI_CHECKUP_PROBE_URL;
 	if (probeUrl) {
 		const probe = await probeThroughProxy(proxy, probeUrl);
 		// A non-zero curl exit is not "curl is missing": curl prints 000 to stdout

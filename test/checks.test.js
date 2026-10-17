@@ -88,6 +88,18 @@ test("packages: a manifest pointing at a file that is not there fails", async ()
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("packages: an empty list is not a malformed config", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const rows = await packages.run(buildContext({ agentDir: root }));
+	// `[]` is truthy, so a truthiness test called this a broken config on every
+	// fresh install.
+	assert.equal(rows[0].status, "skip");
+	assert.match(rows[0].detail, /no packages/);
+	assert.doesNotMatch(rows[0].detail, /not a list/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("packages: a non-list `packages` value is reported, not walked char by char", async () => {
 	const root = tmpRoot();
 	writeJson(path.join(root, "settings.json"), { packages: "npm:oops" });
@@ -256,6 +268,36 @@ test("binaries: no .bin directory is skipped rather than failed", async () => {
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("binaries: a leftover staging link from an interrupted install is not a broken command", async () => {
+	const root = tmpRoot();
+	const pkg = installPkg(root, "pi-thing", { bin: { "pi-thing": "cli.js" } }, ["cli.js"]);
+	const binDir = path.join(root, "npm", "node_modules", ".bin");
+	fs.mkdirSync(binDir, { recursive: true });
+	fs.symlinkSync(path.join(pkg, "cli.js"), path.join(binDir, "pi-thing"));
+	// npm writes .<name>-<random> and renames it into place, so one of these means
+	// an install is in flight, not that the package is damaged.
+	fs.symlinkSync(path.join(pkg, "gone.js"), path.join(binDir, ".pi-thing-BxfjvsL8"));
+
+	const rows = byId(await binaries.run(buildContext({ agentDir: root })));
+	assert.equal(rows.dangling.status, "ok", rows.dangling.detail);
+	assert.equal(rows.dangling.detail, "1 entries all resolve");
+	assert.equal(rows.staging.status, "warn");
+	assert.match(rows.staging.detail, /leftover staging link/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("binaries: a real dangling link still fails", async () => {
+	const root = tmpRoot();
+	const pkg = installPkg(root, "pi-thing", { bin: { "pi-thing": "cli.js" } }, ["cli.js"]);
+	const binDir = path.join(root, "npm", "node_modules", ".bin");
+	fs.mkdirSync(binDir, { recursive: true });
+	fs.symlinkSync(path.join(pkg, "gone.js"), path.join(binDir, "pi-thing"));
+	const rows = byId(await binaries.run(buildContext({ agentDir: root })));
+	assert.equal(rows.dangling.status, "fail");
+	assert.match(rows.dangling.detail, /pi-thing/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 // --- registry ------------------------------------------------------------
 
 function fakePi(settings, tools) {
@@ -357,26 +399,48 @@ test("runChecks turns a crashed module into a failure, not a warning", async () 
 
 // --- CLI -----------------------------------------------------------------
 
+/** Run the CLI against a temporary agent root, never the developer's real one. */
+function runCli(root, args) {
+	try {
+		const stdout = execFileSync(process.execPath, [CLI, ...args], {
+			encoding: "utf8",
+			stdio: "pipe",
+			env: { ...process.env, PI_CODING_AGENT_DIR: root, https_proxy: "", all_proxy: "" },
+		});
+		return { status: 0, stdout };
+	} catch (e) {
+		return { status: e.status, stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
+	}
+}
+
+/** A temp agent root that is as close to healthy as a temp root can be. */
+function healthyRoot() {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	// A provider is needed for the network rows to exist at all: without it the
+	// module reports one unreadable-models row and never reaches the probe plan.
+	writeJson(path.join(root, "models.json"), { providers: { p: { baseUrl: "https://example.invalid/v1", apiKey: "x" } } });
+	fs.mkdirSync(path.join(root, "bin"), { recursive: true });
+	fs.writeFileSync(path.join(root, "bin", "pi"), "#!/bin/sh\n");
+	fs.chmodSync(path.join(root, "bin", "pi"), 0o755);
+	return root;
+}
+
 test("CLI: a bad flag exits 2 and prints the reason", () => {
-	assert.throws(
-		() => execFileSync(process.execPath, [CLI, "--nope"], { encoding: "utf8", stdio: "pipe" }),
-		(e) => {
-			assert.equal(e.status, 2);
-			assert.match(String(e.stderr), /unknown option/);
-			return true;
-		},
-	);
+	const { status, stderr } = runCli(healthyRoot(), ["--nope"]);
+	assert.equal(status, 2);
+	assert.match(stderr, /unknown option/);
+});
+
+test("CLI: --json --fix is a usage error rather than a silent no-op", () => {
+	const { status, stderr } = runCli(healthyRoot(), ["--json", "--fix"]);
+	assert.equal(status, 2);
+	assert.match(stderr, /cannot be combined/);
 });
 
 test("CLI: --offline --json emits a well-formed report", () => {
-	// Exit 0 or 1 depending on the host, but the payload shape must hold.
-	let stdout;
-	try {
-		stdout = execFileSync(process.execPath, [CLI, "--offline", "--json"], { encoding: "utf8", stdio: "pipe" });
-	} catch (e) {
-		assert.equal(e.status, 1, "only a failed check may make the CLI exit non-zero");
-		stdout = e.stdout;
-	}
+	const { status, stdout } = runCli(healthyRoot(), ["--offline", "--json"]);
+	assert.equal(status, 0, "a healthy temp root must not fail");
 	const report = JSON.parse(stdout);
 	assert.ok(Array.isArray(report.checks) && report.checks.length > 0);
 	assert.equal(report.summary.total, report.checks.length);
@@ -384,6 +448,56 @@ test("CLI: --offline --json emits a well-formed report", () => {
 	assert.ok(report.checks.every((c) => !("fix" in c) && !("fixTarget" in c)));
 	// Offline mode must not have probed the network.
 	assert.ok(report.checks.some((c) => c.id === "providers" && c.status === "skip"));
+	// The dns row stays in the report so the check count does not change between
+	// offline and online runs of the same install.
+	assert.ok(report.checks.some((c) => c.id === "dns" && c.status === "skip"));
+});
+
+test("CLI: repairing the only failure makes the exit code 0", () => {
+	const root = healthyRoot();
+	const settings = path.join(root, "settings.json");
+	fs.writeFileSync(settings, '{ "broken": ');
+	fs.writeFileSync(`${settings}.bak`, JSON.stringify({ packages: [] }));
+
+	// Baseline: broken config, exit 1.
+	assert.equal(runCli(root, ["--offline"]).status, 1);
+
+	// After the repair the tree is healthy, so `pi-checkup --fix -y && start-pi`
+	// does what it looks like it does.
+	const fixed = runCli(root, ["--offline", "--fix", "-y"]);
+	assert.equal(fixed.status, 0, fixed.stdout);
+	assert.match(fixed.stdout, /restored settings\.json/);
+	assert.deepEqual(JSON.parse(fs.readFileSync(settings, "utf8")).packages, []);
+	// The broken copy is kept so the repair is reversible by hand.
+	assert.ok(fs.readdirSync(root).some((f) => f.startsWith("settings.json.broken-")));
+});
+
+test("CLI: --fix without --yes only lists the repairs", () => {
+	const root = healthyRoot();
+	const settings = path.join(root, "settings.json");
+	fs.writeFileSync(settings, '{ "broken": ');
+	fs.writeFileSync(`${settings}.bak`, JSON.stringify({ packages: [] }));
+	const { status, stdout } = runCli(root, ["--offline", "--fix"]);
+	assert.equal(status, 1, "nothing was repaired, so the failure stands");
+	assert.match(stdout, /Re-run with --fix --yes/);
+	assert.equal(fs.readFileSync(settings, "utf8"), '{ "broken": ');
+});
+
+test("PI_CHECKUP_IGNORE downgrades a matching row to skip and says so", async () => {
+	const { parseIgnore, applyIgnore } = await import("../src/checks/index.js");
+	const rows = [
+		{ group: "Binaries", id: "unreachable", title: "unreachable bins", status: "warn", detail: "d", fix: "x", fixTarget: "y" },
+		{ group: "Config", id: "env", title: "env references", status: "warn", detail: "d" },
+	];
+	const out = applyIgnore(rows, parseIgnore("unreachable, Config:env"));
+	assert.equal(out[0].status, "skip");
+	assert.match(out[0].detail, /ignored via PI_CHECKUP_IGNORE \(would be warn\)/);
+	// A suppressed repair must not stay armed.
+	assert.equal(out[0].fix, undefined);
+	assert.equal(out[1].status, "skip");
+	// Rows that were not named are untouched.
+	const untouched = applyIgnore(rows, parseIgnore("nothing"));
+	assert.deepEqual(untouched.map((r) => r.status), ["warn", "warn"]);
 });
 
 test("config: an exported but empty variable counts as unset", async () => {

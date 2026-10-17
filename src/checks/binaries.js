@@ -11,6 +11,32 @@ import { exists, isMissing, normalizePath, readJson, resolvePackageDir, sourceOf
 
 export const group = "Binaries";
 
+/**
+ * npm links package commands without a leading dot, so a dot-prefixed entry in
+ * .bin is a leftover of npm's atomic install: it writes `.<name>-<random>` and
+ * renames it into place. Seeing one means an install is running right now, or was
+ * interrupted — not that a package is broken. Reporting those as broken commands
+ * made a checkup run during `pi install` look like a damaged installation.
+ */
+function isStagingArtifact(name) {
+	return name.startsWith(".") && /-[A-Za-z0-9]{6,12}$/.test(name);
+}
+
+function stagingRow(staging, danglingStaging) {
+	if (!staging.length) return null;
+	const broken = danglingStaging.length;
+	return {
+		group,
+		id: "staging",
+		title: "install leftovers",
+		status: broken ? "warn" : "ok",
+		detail: broken
+			? `${broken} of ${staging.length} leftover staging link(s) do not resolve: ${staging.slice(0, 6).join(", ")}`
+			: `${staging.length} leftover staging link(s), all resolve`,
+		hint: broken ? "An install was interrupted. Re-run it for the affected packages, or delete these entries from node_modules/.bin." : undefined,
+	};
+}
+
 function danglingRow(dangling, entryCount) {
 	if (dangling.length) {
 		return {
@@ -85,6 +111,8 @@ export async function run({ settings, agentDir: root }) {
 
 	// --- dangling symlinks -------------------------------------------------
 	const dangling = [];
+	const staging = [];
+	const danglingStaging = [];
 	for (const entry of entries) {
 		const full = path.join(binDir, entry);
 		let isLink = false;
@@ -93,10 +121,19 @@ export async function run({ settings, agentDir: root }) {
 		} catch {
 			continue;
 		}
-		if (isLink && !exists(full)) dangling.push(entry);
+		const broken = isLink && !exists(full);
+		if (isStagingArtifact(entry)) {
+			staging.push(entry);
+			if (broken) danglingStaging.push(entry);
+			continue;
+		}
+		if (broken) dangling.push(entry);
 	}
 
-	const results = [danglingRow(dangling, entries.length)];
+	// Real breakage stays a failure; a half-finished install is reported as its
+	// own thing, because the fix is "let the install finish", not "reinstall".
+	const stagingFindings = stagingRow(staging, danglingStaging);
+	const results = [danglingRow(dangling, entries.length - staging.length), ...(stagingFindings ? [stagingFindings] : [])];
 
 	// --- declared but never linked -----------------------------------------
 	// A package can declare a `bin` and still have no shim, because npm skips

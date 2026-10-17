@@ -25,26 +25,43 @@ export function toJson(results, extra = {}) {
 }
 
 /**
- * Greedy word wrap. `indent` is the column the first line starts at, so a
- * continuation line lines up under the text it continues.
- * A single word longer than the available width is left intact rather than cut.
+ * Greedy word wrap. `indent` is the column the text starts at, so every line has
+ * the same available width and continuation lines line up under the text they
+ * continue.
+ *
+ * A token longer than the whole column — a URL, a hash, a deep path — is cut into
+ * chunks rather than left to overflow: the terminal would wrap it anyway, and it
+ * would do so with no indent, which breaks the column alignment that makes the
+ * report scannable.
  */
 function wrapText(text, width, indent) {
 	const body = String(text ?? "");
 	if (!body) return [""];
-	if (indent + body.length <= width) return [body];
+	const avail = Math.max(8, width - indent);
+	if (body.length <= avail) return [body];
 
 	const lines = [];
 	let line = "";
-	for (const word of body.split(/\s+/).filter(Boolean)) {
-		if (!line) line = word;
-		else if (indent + line.length + 1 + word.length <= width) line += ` ${word}`;
-		else {
+	const flush = () => {
+		if (line) {
 			lines.push(line);
+			line = "";
+		}
+	};
+	for (const word of body.split(/\s+/).filter(Boolean)) {
+		if (word.length > avail) {
+			flush();
+			for (let i = 0; i < word.length; i += avail) lines.push(word.slice(i, i + avail));
+			continue;
+		}
+		if (!line) line = word;
+		else if (line.length + 1 + word.length <= avail) line += ` ${word}`;
+		else {
+			flush();
 			line = word;
 		}
 	}
-	if (line) lines.push(line);
+	flush();
 	return lines.length ? lines : [body];
 }
 
@@ -85,7 +102,11 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 			const mark = `  ${MARKS[r.status] ?? "?"} `;
 			const title = r.title.padEnd(titleWidth);
 			if (r.title.length > titleWidth) {
-				lines.push(`${mark}${r.title}`);
+				// The title gets the same treatment as the detail: a name that does not
+				// fit would otherwise set the width for the whole report.
+				const titleParts = wrapText(r.title, width, mark.length);
+				lines.push(`${mark}${titleParts[0]}`);
+				for (const p of titleParts.slice(1)) lines.push("".padEnd(mark.length) + p);
 				for (const p of wrapText(r.detail, width, detailColumn)) lines.push("".padEnd(detailColumn) + p);
 			} else {
 				const parts = wrapText(r.detail, width, detailColumn);
@@ -117,5 +138,10 @@ export function renderVerdict(results) {
 	const s = summarize(results);
 	if (s.fail) return `✗ ${s.fail} failed`;
 	if (s.warn) return `! ${s.warn} ${s.warn === 1 ? "warning" : "warnings"}`;
+	// "all clear" over a report where nothing could be checked is the exact false
+	// confidence this package exists to remove, so the skipped count is part of
+	// the verdict rather than a footnote.
+	if (!s.ok) return `· nothing verified (${s.skip} skipped)`;
+	if (s.skip) return `✓ ${s.ok} ok, ${s.skip} skipped`;
 	return "✓ all clear";
 }

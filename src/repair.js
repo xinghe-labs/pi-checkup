@@ -68,14 +68,25 @@ function syncDir(dir) {
  * power loss cannot leave the rename visible while the new content is not.
  */
 function writeAtomic(target, content) {
+	// A dotfiles-style install keeps settings.json as a symlink into a repo. A
+	// plain rename over `target` would replace the symlink with a regular file and
+	// silently detach the config from its repository, so the write lands on the
+	// real file instead.
+	let real = target;
+	try {
+		real = fs.realpathSync(target);
+	} catch {
+		// Missing or dangling: the target itself is the only path there is.
+	}
+
 	let mode;
 	try {
-		mode = fs.statSync(target).mode;
+		mode = fs.statSync(real).mode;
 	} catch {
 		mode = undefined;
 	}
 
-	const base = `${target}.checkup-tmp-${stamp()}`;
+	const base = `${real}.checkup-tmp-${stamp()}`;
 	let fd;
 	let tmp;
 	for (let i = 0; i < 50 && fd === undefined; i++) {
@@ -87,7 +98,7 @@ function writeAtomic(target, content) {
 			if (e?.code !== "EEXIST") throw e;
 		}
 	}
-	if (fd === undefined) throw new Error(`could not create a temp file next to ${path.basename(target)}`);
+	if (fd === undefined) throw new Error(`could not create a temp file next to ${path.basename(real)}`);
 
 	try {
 		fs.writeFileSync(fd, content);
@@ -95,8 +106,8 @@ function writeAtomic(target, content) {
 		fs.closeSync(fd);
 		fd = undefined;
 		if (mode !== undefined) fs.chmodSync(tmp, mode);
-		fs.renameSync(tmp, target);
-		syncDir(path.dirname(target));
+		fs.renameSync(tmp, real);
+		syncDir(path.dirname(real));
 	} catch (e) {
 		if (fd !== undefined) {
 			try {
@@ -118,6 +129,19 @@ function writeAtomic(target, content) {
  * Replace a config file that is no longer valid JSON with its newest backup.
  * The broken copy is kept beside it, so this is reversible by hand.
  */
+/**
+ * Why a config file could not be used, in the terms the user needs.
+ *
+ * "is not valid JSON" for a file that simply is not there sends the reader
+ * looking for a syntax error that does not exist.
+ */
+function unreadable(target, parsed) {
+	const name = path.basename(target);
+	if (parsed.missing) return { ok: false, message: `${name} does not exist` };
+	if (parsed.invalid) return { ok: false, message: `${name} is not valid JSON: ${parsed.error}` };
+	return { ok: false, message: `${name} could not be read: ${parsed.error}` };
+}
+
 export function applyRestoreConfig(target) {
 	const backup = newestBackup(target);
 	if (!backup) return { ok: false, message: `no backup found for ${path.basename(target)}` };
@@ -136,7 +160,7 @@ export function applyRestoreConfig(target) {
 /** Collapse duplicate `packages` entries, preserving the first occurrence. */
 export function applyDedupePackages(target) {
 	const settings = readJson(target);
-	if (!settings.ok) return { ok: false, message: `${path.basename(target)} is not valid JSON` };
+	if (!settings.ok) return unreadable(target, settings);
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to dedupe" };
 
 	const seen = new Set();
@@ -174,7 +198,7 @@ export function applyDedupePackages(target) {
  */
 export function applyPruneMissingPackages(target, root = path.dirname(target)) {
 	const settings = readJson(target);
-	if (!settings.ok) return { ok: false, message: `${path.basename(target)} is not valid JSON` };
+	if (!settings.ok) return unreadable(target, settings);
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to prune" };
 
 	const kept = [];

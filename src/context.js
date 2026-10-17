@@ -10,9 +10,9 @@ import path from "node:path";
 import { agentDir, readJson } from "./util.js";
 
 /**
- * @param {{ pi?: object, cwd?: string, offline?: boolean, agentDir?: string }} input
+ * @param {{ pi?: object, cwd?: string, offline?: boolean, agentDir?: string, env?: object }} input
  */
-export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride } = {}) {
+export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride, env } = {}) {
 	const root = rootOverride ?? agentDir();
 	const settingsFile = path.join(root, "settings.json");
 	const modelsFile = path.join(root, "models.json");
@@ -45,6 +45,10 @@ export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride 
 		settings,
 		settingsSource,
 		hasRuntime,
+		// Checks read the environment through the context, not from process.env, so
+		// a test can describe a proxy or an unset variable without touching the
+		// environment the suite itself runs in.
+		env: env ?? process.env,
 		// Set when the caller asked for checks that must not touch the network.
 		offline,
 	};

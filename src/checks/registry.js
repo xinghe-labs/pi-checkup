@@ -108,13 +108,19 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 		.map(([owner, names]) => `${owner}: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ` +${names.length - 6}` : ""}`)
 		.join("; ");
 	if (registryReadable && attribution) {
+		// The owners themselves belong in the default view: "12 sources own 40
+		// tools" answers nothing a user asked, while naming them is the whole point
+		// of an attribution row. The per-owner tool names stay behind --verbose.
+		const ranked = [...toolsByOwner].sort((a, b) => b[1].length - a[1].length).map(([owner, names]) => `${owner} (${names.length})`);
+		const head = ranked.slice(0, 4).join(", ");
+		const more = ranked.length > 4 ? ` +${ranked.length - 4} more` : "";
 		results.push({
 			group,
 			id: "attribution",
 			title: "attribution",
 			status: "ok",
-			detail: `${toolsByOwner.size} source(s) own the ${tools.length} registered tool(s)`,
-			hint: `Run with --verbose to see them. ${attribution}`,
+			detail: `${tools.length} tool(s) from ${toolsByOwner.size} source(s): ${head}${more}`,
+			hint: `Run with --verbose for the tool names. ${attribution}`,
 		});
 	}
 
@@ -206,8 +212,6 @@ function findDuplicates(items) {
 	return [...byName].filter(([, owners]) => owners.size > 1).map(([name, owners]) => [name, [...owners]]);
 }
 
-const CASE_INSENSITIVE = process.platform === "win32" || process.platform === "darwin";
-
 /**
  * Packages from settings whose manifests declare an extension entry.
  * Returns the resolved directory, because the declared source string and the
@@ -228,8 +232,10 @@ function declaredPackages(settings, root) {
 		const manifest = readJson(path.join(dir, "package.json"));
 		if (!manifest.ok) continue;
 		// An empty list declares no extension, so loading nothing is correct.
+		// A single string is as valid as a list here; both declare at least one
+		// extension, and only "declares none" means silence is expected.
 		const declared = manifest.data?.pi?.extensions;
-		const count = Array.isArray(declared) ? declared.length : declared ? 1 : 0;
+		const count = Array.isArray(declared) ? declared.length : declared === undefined ? 0 : 1;
 		if (!count) continue;
 		out.push({ label: source.replace(/^npm:/, ""), dir: normalizePath(dir) });
 	}

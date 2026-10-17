@@ -16,16 +16,21 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 
 	// A hand-edited settings.json can put a string here, and iterating that would
 	// walk it character by character and report seven unverifiable "sources".
-	const specs = Array.isArray(settings?.packages) ? settings.packages : [];
+	const declared = settings?.packages;
+	const specs = Array.isArray(declared) ? declared : [];
 
 	if (!specs.length) {
+		// `[]` is truthy, so testing the value itself reported a fresh install with
+		// an empty package list as a malformed config. The question is whether it
+		// is a list, not whether it exists.
+		const malformed = declared !== undefined && !Array.isArray(declared);
 		return [
 			{
 				group,
 				id: "installed",
 				title: "installed",
 				status: "skip",
-				detail: settings?.packages ? "settings.json `packages` is not a list" : "no packages in settings.json",
+				detail: malformed ? "settings.json `packages` is not a list" : "no packages in settings.json",
 			},
 		];
 	}
@@ -127,7 +132,11 @@ export async function run({ settings, agentDir: root, settingsFile, settingsSour
 				"manifests",
 				"fail",
 				`${brokenManifest.length} unreadable package.json: ${preview(brokenManifest, 3)}`,
-				{ hint: "Reinstall the affected packages." },
+				{
+					// A run that overlaps an install sees a manifest mid-rename. Saying so
+					// is the difference between "reinstall everything" and "wait 30 seconds".
+					hint: "Reinstall the affected packages. If an install or update is running right now, re-run once it finishes.",
+				},
 			),
 		);
 	} else if (manifestRead) {

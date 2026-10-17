@@ -75,6 +75,11 @@ export async function run({ offline = false, agentDir: root, modelsFile }) {
 				detail: `offline mode — ${planned.length} configured endpoint(s) not probed`,
 				hint: "Re-run without --offline to test reachability.",
 			},
+			// Emitted as a skip rather than omitted: a row that vanishes in offline
+			// mode makes the check count and the summary change between two runs of
+			// the same tool, which is exactly the kind of drift a health report
+			// should not have.
+			{ group, id: "dns", title: "dns", status: "skip", detail: "offline mode — no host resolved" },
 		];
 		if (cleartextRow) rows.push(cleartextRow);
 		return rows;

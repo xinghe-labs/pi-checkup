@@ -21,12 +21,49 @@ export const CHECKS = [registry, packages, binaries, network, config, runtime];
 export const MODULE_TIMEOUT_MS = 30_000;
 
 /**
+ * Parse an ignore list: `PI_CHECKUP_IGNORE="unreachable,packages:entries"`.
+ * Entries match a row's id, its `Group:id` form, or its title.
+ */
+export function parseIgnore(raw) {
+	return new Set(
+		String(raw ?? "")
+			.split(/[,\s]+/)
+			.map((s) => s.trim())
+			.filter(Boolean),
+	);
+}
+
+/**
+ * Downgrade matching rows to `skip`, keeping the original status visible.
+ *
+ * Without this a single benign finding — an event-only package that registers no
+ * tool, a launcher deliberately not on PATH — makes every future report
+ * permanently non-clean, and a health check you learn to ignore is worse than no
+ * health check. The suppression is never silent: the row keeps its detail and
+ * says which status it replaced.
+ */
+export function applyIgnore(rows, ignore) {
+	if (!ignore?.size) return rows;
+	return rows.map((r) => {
+		const keys = [r.id, `${r.group}:${r.id}`, r.title];
+		if (!keys.some((k) => k && ignore.has(k))) return r;
+		const { fix, fixTarget, ...rest } = r;
+		return {
+			...rest,
+			status: "skip",
+			detail: `ignored via PI_CHECKUP_IGNORE (would be ${r.status}): ${r.detail}`,
+			hint: undefined,
+		};
+	});
+}
+
+/**
  * Run every check module against a context built by buildContext().
  * @param {object} ctx
  * @param {Array<{group?: string, run: Function}>} [modules] overridable so tests can inject a crashing module
- * @param {{ timeoutMs?: number }} [options]
+ * @param {{ timeoutMs?: number, ignore?: Set<string> }} [options]
  */
-export async function runChecks(ctx, modules = CHECKS, { timeoutMs = MODULE_TIMEOUT_MS } = {}) {
+export async function runChecks(ctx, modules = CHECKS, { timeoutMs = MODULE_TIMEOUT_MS, ignore } = {}) {
 	const settled = await Promise.all(
 		modules.map(async (mod) => {
 			const name = mod.group ?? "Unknown";
@@ -70,5 +107,8 @@ export async function runChecks(ctx, modules = CHECKS, { timeoutMs = MODULE_TIME
 			}
 		}),
 	);
-	return settled.flat();
+	return applyIgnore(
+		settled.flat(),
+		ignore ?? parseIgnore(process.env.PI_CHECKUP_IGNORE),
+	);
 }
