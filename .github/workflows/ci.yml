@@ -37,11 +37,14 @@ jobs:
         run: |
           node bin/checkup.js --version
           node bin/checkup.js --help
-          # A bare runner has no ~/.pi/agent, so the config checks are expected to
-          # fail here; what must hold is that a report is still produced and that
-          # the exit code reflects a failure rather than being swallowed.
+          # A bare runner has no ~/.pi/agent, and a missing agent directory is only
+          # a warning — so the fixture below creates one with a package entry whose
+          # directory is gone. That is a genuine failure, which makes the exit-code
+          # assertion below a real test instead of a tautology.
+          root=$(mktemp -d)
+          printf '%s' '{"packages":["npm:definitely-not-installed"]}' > "$root/settings.json"
           set +e
-          node bin/checkup.js --offline --json > report.json
+          PI_CODING_AGENT_DIR="$root" node bin/checkup.js --offline --json > report.json
           code=$?
           set -e
           node -e "
@@ -62,6 +65,7 @@ jobs:
             if (counts[k] !== r.summary[k]) throw new Error('summary ' + k + '=' + r.summary[k] + ' but rows say ' + counts[k]);
           }
           const failed = r.summary.fail > 0;
+          if (!failed) throw new Error('the fixture was supposed to fail at least one check');
           if (failed !== (process.argv[1] !== '0')) throw new Error('exit code ' + process.argv[1] + ' disagrees with fail count ' + r.summary.fail);
           console.log('report ok:', JSON.stringify(r.summary), 'exit', process.argv[1]);
           " "$code"

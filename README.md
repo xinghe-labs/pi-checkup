@@ -308,6 +308,10 @@ src/
     binaries.js      PATH reachability and shadowing
     network.js       provider endpoints and DNS
     config.js        JSON validity, backups, duplicates, env refs
+test/
+  *.test.js          node --test, no Pi session needed
+scripts/
+  lint.js            node --check over every source file (`npm run lint`)
     runtime.js       node, launcher, disk, proxy
 ```
 
