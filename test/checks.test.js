@@ -1338,6 +1338,18 @@ test("config: a list with nothing comparable in it is a skip, not a pass", async
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("runner: an empty row from a module is named, not dropped", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const good = { group: "X", id: "x", title: "x", status: "ok", detail: "fine" };
+	const rows = await runChecks(buildContext({ agentDir: root }), [{ name: "Half", run: async () => [good, undefined, null] }]);
+	assert.equal(rows.length, 2);
+	assert.equal(rows[0].id, "x");
+	assert.equal(rows[1].status, "fail");
+	assert.match(rows[1].detail, /2 empty row\(s\)/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("runner: a module that returns a non-array becomes one crash row", async () => {
 	// The value used to reach the renderer and throw out of the whole report, so a
 	// single bad module produced "crashed" and no findings at all.

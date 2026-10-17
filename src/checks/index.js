@@ -130,7 +130,21 @@ export async function runChecks(ctx, modules = CHECKS, { timeoutMs = MODULE_TIME
 						},
 					];
 				}
-				return rows;
+				// A `results.push(cond ? row(...) : undefined)` is easy to write and
+				// reaches the renderer as a hole. The rows that did come back are
+				// kept, and the hole is named rather than silently dropped.
+				const kept = rows.filter((r) => r && typeof r === "object");
+				if (kept.length !== rows.length) {
+					kept.push({
+						group: name,
+						id: `crash:${name}`,
+						title: name.toLowerCase(),
+						status: "fail",
+						detail: `check emitted ${rows.length - kept.length} empty row(s)`,
+						hint: "This is a bug in pi-checkup, not necessarily in your setup. Please report it.",
+					});
+				}
+				return kept;
 			} finally {
 				clearTimeout(timer);
 			}
