@@ -277,14 +277,29 @@ test("a repair that finds nothing to do reports that it changed nothing", async 
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("prune refuses when every entry it can resolve is missing", async () => {
-	// The guard used to compare against the whole list, and prune keeps `git:` and
-	// malformed entries by design — so one missing npm entry next to one git source
-	// made the counts differ and the repair deleted the only thing it could see.
+test("prune removes the entries with no directory and keeps the ones it cannot resolve", async () => {
+	// The guard used to compare the number of removals with the number of entries
+	// it could resolve, so a missing npm entry next to a git source always refused
+	// — the list would not have been empty, and the message blamed a mistyped
+	// PI_CODING_AGENT_DIR for a repair that was never attempted.
 	const { applyPruneMissingPackages } = await import("../src/repair.js");
 	const dir = tmp();
 	const file = path.join(dir, "settings.json");
 	const packages = ["npm:gone", "git:https://github.com/me/ext", 42];
+	fs.writeFileSync(file, JSON.stringify({ packages }, null, 2));
+
+	const res = applyPruneMissingPackages(file, dir);
+	assert.equal(res.ok, true);
+	assert.equal(res.changed, true);
+	assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).packages, ["git:https://github.com/me/ext", 42]);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("prune refuses to empty the list, whatever it is made of", async () => {
+	const { applyPruneMissingPackages } = await import("../src/repair.js");
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	const packages = ["npm:gone", "npm:alsogone"];
 	fs.writeFileSync(file, JSON.stringify({ packages }, null, 2));
 
 	const res = applyPruneMissingPackages(file, dir);

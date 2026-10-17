@@ -24,7 +24,11 @@ test("redactProxy never returns credentials", () => {
 	assert.equal(runtime.redactProxy("alice:s3cr3t@proxy.corp:8080"), "proxy.corp:8080");
 	assert.equal(runtime.redactProxy("socks5h://127.0.0.1:10808"), "socks5h://127.0.0.1:10808");
 	assert.equal(runtime.redactProxy("http://127.0.0.1:10808"), "http://127.0.0.1:10808");
-	assert.equal(runtime.redactProxy("garbage"), "garbage");
+	// A bare word is the shape of an API token: `https_proxy=sk-live-…` used to be
+	// echoed here and again from curl's own stderr. A hostname and a secret cannot
+	// be told apart, so neither is printed.
+	assert.equal(runtime.redactProxy("garbage"), "(configured)");
+	assert.equal(runtime.redactProxy("sk-live-proxytoken"), "(configured)");
 	// A user and a password with no host at all: the shape is the credential.
 	assert.equal(runtime.redactProxy("alice:s3cr3t"), "(configured)");
 	assert.equal(runtime.redactProxy("http://alice:s3cr3t"), "(configured)");

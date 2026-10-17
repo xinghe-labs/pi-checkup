@@ -7,7 +7,18 @@
 //      PATH, so the name resolves to something else entirely.
 import path from "node:path";
 import fs from "node:fs";
-import { exists, isMissing, isWindows, readJson, resolvePackageDir, sameCommand, sourceOf, truncateList, whichAll } from "../util.js";
+import {
+	describeFsError,
+	exists,
+	isMissing,
+	isWindows,
+	readJson,
+	resolvePackageDir,
+	sameCommand,
+	sourceOf,
+	truncateList,
+	whichAll,
+} from "../util.js";
 
 export const group = "Binaries";
 
@@ -146,7 +157,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 				hint: missing
 					? declared
 						? "npm creates these links during install. Reinstall the owning package without --ignore-scripts."
-						: undefined
+						: "Nothing is missing yet: no package in settings.json declares a command, and the directory appears with the first `pi install`."
 					: "A permissions or filesystem problem, not a missing install. Check ownership of the agent directory.",
 			},
 		];
@@ -173,7 +184,8 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 				id: "bin-dir",
 				title: "bin dir",
 				status: "warn",
-				detail: `cannot read ${binDir}: ${String(e?.message ?? e)}`,
+				// Not Node's message: it carries the errno and the raw syscall.
+				detail: `cannot read ${binDir}: ${describeFsError(e)}`,
 				hint: "Nothing below this point was checked. Fix the permissions on that directory and re-run.",
 			},
 		];
@@ -252,6 +264,11 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 	const shadowed = [];
 	const unreachable = [];
 
+	// How many of the declared commands actually resolved on PATH. Shadowing is a
+	// question that can only be answered for a command PATH found, and `ownBins`
+	// being non-empty is not the same thing: a package whose shim is missing or
+	// whose directory never made it into PATH leaves zero commands to compare.
+	let resolved = 0;
 	for (const entry of ownBins) {
 		// Both findings below are about commands a Pi package advertises. A
 		// transitive dev dependency that happens to be shadowed is not the user's
@@ -267,6 +284,7 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 		// file, and comparing raw strings called every package bin shadowed.
 		// sameCommand also folds the Windows shim extension, where PATH resolution
 		// answers `foo.CMD` for a link named `foo`.
+		resolved++;
 		if (!sameCommand(hits[0], path.join(binDir, entry))) shadowed.push({ name: entry, actual: hits[0] });
 	}
 
@@ -290,7 +308,13 @@ export async function run({ settings, agentDir: root, binDir = path.join(root, "
 				}
 			: ownBins.size === 0
 				? { group, id: "shadowed", title: "shadowed names", status: "skip", detail: "no package command declared" }
-				: { group, id: "shadowed", title: "shadowed names", status: "ok", detail: "none" },
+				: resolved === 0
+					? // Nothing resolved, so nothing was compared. "none" here was a green
+						// tick over zero inspected commands, next to a row saying the
+						// commands could not be found — the same vacuous pass the
+						// `dangling` row closes.
+						{ group, id: "shadowed", title: "shadowed names", status: "skip", detail: "no package command resolved on PATH" }
+					: { group, id: "shadowed", title: "shadowed names", status: "ok", detail: "none" },
 	);
 
 	if (unreachable.length) {

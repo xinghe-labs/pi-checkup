@@ -179,8 +179,59 @@ export function readJson(file) {
 		// is often models.json, the one that holds keys. Only the position is
 		// carried through; the message itself never reaches a report.
 		const pos = /at position (\d+)/.exec(String(e?.message ?? ""));
-		return { ok: false, invalid: true, error: pos ? `not valid JSON (position ${pos[1]})` : "not valid JSON" };
+		// V8 reports a byte offset, and a multi-line models.json leaves the reader
+		// counting characters to find it. Line and column are what an editor jumps to.
+		if (pos) {
+			const idx = Number(pos[1]);
+			const before = raw.slice(0, idx);
+			return {
+				ok: false,
+				invalid: true,
+				error: `not valid JSON (line ${before.split("\n").length}, column ${idx - before.lastIndexOf("\n")})`,
+			};
+		}
+		return { ok: false, invalid: true, error: "not valid JSON" };
 	}
+}
+
+/**
+ * A failed HTTP request in words, never in Node's vocabulary.
+ *
+ * Every fault below the HTTP layer arrives as `fetch failed` with the reason on
+ * `cause`, and that reason is an errno plus a syscall — `getaddrinfo ENOTFOUND
+ * api.example.com` — or undici's `This operation was aborted` when the only
+ * thing that happened is that this process stopped waiting. The first is
+ * accurate but unreadable; the second asserts something about the endpoint that
+ * a local timeout never established.
+ *
+ * `aborted` is set by this process's own timer, so it is the one case where the
+ * failure says nothing at all about the server. `kind` lets a caller branch on
+ * the cause instead of matching on prose.
+ */
+export function describeNetError(e, aborted = false, timeout = TIMEOUT_MS) {
+	if (aborted) return { kind: "timeout", text: `no answer within ${Math.round(timeout / 1000)}s` };
+	const cause = e?.cause ?? {};
+	const code = String(cause.code ?? "");
+	const raw = String(cause.message ?? e?.message ?? "");
+	// A request Node refuses to build never opens a socket, and undici's message
+	// quotes the offending value — which here is the apiKey. That is a fact about
+	// the config, not about the endpoint, so it gets its own kind.
+	if (/ByteString|Cannot convert argument|invalid header|Invalid value|Failed to parse URL/i.test(raw)) {
+		return { kind: "request", text: "the request could not be built" };
+	}
+	const known = [
+		[/^(ENOTFOUND|EAI_AGAIN|EAI_NODATA|ENODATA)$/, "the name does not resolve"],
+		[/^ECONNREFUSED$/, "the connection was refused"],
+		[/^ECONNRESET$/, "the connection was reset"],
+		[/^(EHOSTUNREACH|ENETUNREACH|EHOSTDOWN)$/, "the host is not reachable from here"],
+		[/^(ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT)$/, "the connection timed out"],
+		[/^(CERT_|DEPTH_ZERO|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_TLS|ERR_SSL)/, "the TLS certificate was rejected"],
+	];
+	for (const [re, text] of known) if (re.test(code)) return { kind: code, text };
+	// An unrecognised errno is worth keeping: it is the string the reader will
+	// paste into a search engine.
+	if (code) return { kind: code, text: `the request failed (${code})` };
+	return { kind: "unknown", text: "no response" };
 }
 
 export function exists(p) {
@@ -246,7 +297,10 @@ export function newestBackup(file) {
 	let bestTime = Number.NEGATIVE_INFINITY;
 	for (const entry of entries) {
 		if (entry === base || !entry.startsWith(base)) continue;
-		if (!/(\.bak|\.checkup-bak)(-|$)/.test(entry.slice(base.length))) continue;
+		// Anchored: the marker has to start right after `settings.json`. Unanchored,
+		// `settings.json.local.bak` matched too, and restoring a corrupt settings.json
+		// wrote that unrelated file over it.
+		if (!/^\.(bak|checkup-bak)(-|$)/.test(entry.slice(base.length))) continue;
 		const full = path.join(dir, entry);
 		let mtimeMs;
 		try {
@@ -394,23 +448,35 @@ export function globExists(dir, pattern) {
 	return exists(cur);
 }
 
-/** fetch() with a hard timeout. Returns {ok, status, error} and never throws. */
+/**
+ * fetch() with a hard timeout. Returns `{ok, status, error, kind, aborted}` and
+ * never throws.
+ *
+ * `error` is prose and `kind` is the machine-readable cause (see
+ * `describeNetError`); the raw errno and undici message never leave this
+ * function, because they end up in the report, the TUI notification and the
+ * `--json` payload. `aborted` records that this process stopped waiting, which
+ * is the one failure that says nothing about the endpoint.
+ */
 export async function timedFetch(url, init = {}, timeout = TIMEOUT_MS) {
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), timeout);
+	// Set by our own timer only, so it cannot be confused with a caller's abort.
+	let aborted = false;
+	const timer = setTimeout(() => {
+		aborted = true;
+		controller.abort();
+	}, timeout);
 	try {
 		const res = await fetch(url, { ...init, signal: controller.signal });
 		// We only want the status line. Dropping the body lets undici release the
 		// socket instead of parking one connection per probe until keep-alive ends.
 		await res.body?.cancel().catch(() => {});
-		return { ok: true, status: res.status };
+		return { ok: true, status: res.status, aborted: false };
 	} catch (e) {
-		// `fetch failed` is the whole message for every network fault; the reason is
-		// on `cause` (ECONNREFUSED, a header Node refuses to build, a timeout). A
-		// report that says only "fetch failed" leaves the user with nothing.
-		const cause = e?.cause?.message ?? e?.cause?.code ?? "";
-		const message = String(e?.message ?? e);
-		return { ok: false, status: 0, error: cause ? `${message} — ${String(cause)}` : message };
+		const { kind, text } = describeNetError(e, aborted, timeout);
+		// `timeout` is carried out so a caller can phrase the deadline without
+		// parsing it back out of the sentence.
+		return { ok: false, status: 0, aborted, error: text, kind, timeoutMs: timeout };
 	} finally {
 		clearTimeout(timer);
 	}
@@ -426,11 +492,16 @@ export async function timedFetch(url, init = {}, timeout = TIMEOUT_MS) {
 export async function resolveHost(host, timeout = 4000) {
 	let timer;
 	const deadline = new Promise((resolve) => {
-		timer = setTimeout(() => resolve({ ok: false, error: "timeout" }), timeout);
+		timer = setTimeout(
+			() => resolve({ ok: false, timedOut: true, error: `no answer within ${Math.round(timeout / 1000)}s` }),
+			timeout,
+		);
 	});
 	const lookup = dns.lookup(host, { all: true }).then(
 		(addrs) => ({ ok: true, addresses: addrs.map((a) => a.address) }),
-		(e) => ({ ok: false, error: String(e?.code ?? e?.message ?? e) }),
+		// Same translation as the HTTP path: `getaddrinfo ENOTFOUND` is an errno,
+		// and this row is read by someone deciding whether their DNS is broken.
+		(e) => ({ ok: false, timedOut: false, error: describeNetError({ cause: e }).text }),
 	);
 	try {
 		return await Promise.race([lookup, deadline]);
@@ -642,11 +713,15 @@ export function redactProxy(raw) {
 
 	// No "@" at all: `alice:s3cr3t` and `http://alice:s3cr3t` are a user and a
 	// password with no host, which the URL parser rejects. The shape itself is
-	// the credential, so nothing of it can be shown. A bare `host:port` is safe.
+	// the credential, so nothing of it can be shown. A bare `host:port` is safe:
+	// the port is what makes it a proxy address rather than a secret.
 	if (/^[a-z0-9._\-[\]]+:\d+$/i.test(text)) return text;
-	// No "@" and no colon: a bare word cannot be a user and a password, so it is
-	// safe to echo and useful to see.
-	if (!text.includes(":")) return text;
+	// Nothing else is echoed. A bare word is exactly the shape of an API token —
+	// `https_proxy=sk-live-…` printed the whole secret here and again from curl's
+	// own stderr — and a value with a colon but no port is a user and password
+	// with no host. Neither can be told apart from a hostname, and the promise in
+	// the README and in --help is that a value which is nothing but a credential
+	// prints `(configured)`.
 	return "(configured)";
 }
 

@@ -9,6 +9,7 @@ import path from "node:path";
 import {
 	bareHost,
 	describeFsError,
+	describeNetError,
 	globExists,
 	humanBytes,
 	isLoopbackHost,
@@ -484,4 +485,71 @@ test("curl never carries the URL, proxy or headers on its command line", () => {
 	// inherited NO_PROXY would route the probe around the proxy being tested.
 	assert.equal(curlArgs("/tmp/curl.conf")[0], "-q");
 	assert.match(args, /--noproxy {2}/);
+});
+
+test("a backup matcher never mistakes a neighbouring file for a backup", () => {
+	// `settings.json.local.bak` is a file a user keeps beside the config, not a
+	// backup of it. The matcher used to look for `.bak` anywhere in the entry, so
+	// restoring a broken settings.json picked that file and wrote it over the
+	// config — silently replacing the user's settings with whatever it held.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "checkup-unit-"));
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, "{}");
+	fs.writeFileSync(path.join(dir, "settings.json.local.bak"), '{"packages":["nonsense"]}');
+
+	assert.equal(newestBackup(file), null);
+
+	// The real names still match, with and without a timestamp, and the newest of
+	// them wins.
+	fs.writeFileSync(path.join(dir, "settings.json.checkup-bak-20260101-000000"), "a");
+	const newest = path.join(dir, "settings.json.bak-20260102-000000");
+	fs.writeFileSync(newest, "b");
+	// Explicit mtimes: two files written in the same millisecond are compared by
+	// name instead, which is a deliberate tie-break rather than what this asserts.
+	const later = new Date(Date.now() + 10_000);
+	fs.utimesSync(newest, later, later);
+	assert.equal(newestBackup(file), newest);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("an unparseable JSON file reports a line, never the parser's message", () => {
+	// V8 quotes the offending input in its message, and for models.json that input
+	// is an apiKey. Only the position may cross this boundary, and it is more
+	// useful as a line and column than as a byte offset into a pretty-printed file.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "checkup-unit-"));
+	const file = path.join(dir, "models.json");
+	fs.writeFileSync(file, '{\n  "providers": {\n    "me": {\n      "apiKey": "sk-live-9f8e",\n    }\n  }\n}');
+
+	const res = readJson(file);
+	assert.equal(res.ok, false);
+	assert.equal(res.invalid, true);
+	// The position of the token V8 choked on, as a line and a column: a byte
+	// offset into a pretty-printed file is a number nobody can act on.
+	assert.equal(res.error, "not valid JSON (line 5, column 5)");
+	assert.doesNotMatch(JSON.stringify(res), /sk-live-9f8e/);
+	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("network failures read as prose, without errno or undici internals", () => {
+	// Every one of these strings used to reach the report verbatim, which meant
+	// `getaddrinfo ENOTFOUND`, `fetch failed` and a V8 argument-conversion message
+	// all shown to a user who wanted to know whether their endpoint was up.
+	assert.deepEqual(describeNetError(Object.assign(new Error("fetch failed"), { cause: { code: "ENOTFOUND" } })), {
+		kind: "ENOTFOUND",
+		text: "the name does not resolve",
+	});
+	assert.equal(describeNetError(Object.assign(new Error("x"), { cause: { code: "ECONNREFUSED" } })).text, "the connection was refused");
+	assert.equal(describeNetError(new Error("Headers.append: ByteString")).kind, "request");
+	assert.equal(describeNetError(new Error("Headers.append: ByteString")).text, "the request could not be built");
+	// A local deadline is this process giving up, and it says only that.
+	assert.deepEqual(describeNetError(new Error("This operation was aborted"), true, 8000), {
+		kind: "timeout",
+		text: "no answer within 8s",
+	});
+	// An alarm clock cannot be reached, so the text must not name a socket error
+	// the code did not observe.
+	assert.doesNotMatch(describeNetError(new Error("This operation was aborted"), true, 8000).text, /unreachable|refused/);
+	// An errno this file has never seen is still reported, and still translated out
+	// of Node's casing.
+	assert.equal(describeNetError(Object.assign(new Error("x"), { cause: { code: "EWEIRD" } })).text, "the request failed (EWEIRD)");
 });

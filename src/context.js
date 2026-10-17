@@ -10,9 +10,9 @@ import path from "node:path";
 import { agentDir, readJson } from "./util.js";
 
 /**
- * @param {{ pi?: object, cwd?: string, offline?: boolean, agentDir?: string, env?: object }} input
+ * @param {{ pi?: object, cwd?: string, offline?: boolean, agentDir?: string, env?: object, agentDirExplicit?: boolean }} input
  */
-export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride, env } = {}) {
+export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride, env, agentDirExplicit = false } = {}) {
 	const root = rootOverride ?? agentDir();
 	const settingsFile = path.join(root, "settings.json");
 	const modelsFile = path.join(root, "models.json");
@@ -63,6 +63,12 @@ export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride,
 		settingsLoaded,
 		settingsSource,
 		hasRuntime,
+		// Whether the agent directory came from an explicit `PI_CODING_AGENT_DIR`
+		// rather than the default location. A directory that is missing answers two
+		// different questions depending on that: on a machine that never ran Pi it is
+		// simply the first use, but a path the user typed and got wrong is a problem
+		// with this run — and the two must not both report as a warning.
+		agentDirExplicit: Boolean(agentDirExplicit),
 		// Checks read the environment through the context, not from process.env, so
 		// a test can describe a proxy or an unset variable without touching the
 		// environment the suite itself runs in.

@@ -143,8 +143,13 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 /** One-line verdict suitable for a status bar or a commit message. */
 export function renderVerdict(results) {
 	const s = summarize(results);
-	if (s.fail) return `✗ ${s.fail} failed`;
-	if (s.warn) return `! ${s.warn} ${s.warn === 1 ? "warning" : "warnings"}`;
+	// The skipped count travels with every verdict, not just the clean one. It
+	// used to disappear the moment anything was non-ok, so `! 1 warning` was the
+	// last line of a report in which 12 of 15 checks had looked at nothing — the
+	// same false confidence the branches below exist to avoid, one level up.
+	const tail = s.skip ? `, ${s.skip} skipped` : "";
+	if (s.fail) return `✗ ${s.fail} failed${tail}`;
+	if (s.warn) return `! ${s.warn} ${s.warn === 1 ? "warning" : "warnings"}${tail}`;
 	// "all clear" over a report where nothing could be checked is the exact false
 	// confidence this package exists to remove, so the skipped count is part of
 	// the verdict rather than a footnote.

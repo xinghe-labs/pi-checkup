@@ -109,7 +109,14 @@ async function main() {
 	// rather than returning a normal report that silently ignored a flag.
 	if (opts.yes && !opts.fix) process.stderr.write("pi-checkup: --yes only means something with --fix\n");
 
-	const ctx = buildContext({ cwd: process.cwd(), offline: opts.offline });
+	// Whether the agent directory was named explicitly matters to the Runtime
+	// group: a path the user typed and got wrong is a fault in this run, while an
+	// absent default location only means Pi has not been started on this machine.
+	const ctx = buildContext({
+		cwd: process.cwd(),
+		offline: opts.offline,
+		agentDirExplicit: Boolean(process.env.PI_CODING_AGENT_DIR),
+	});
 	const results = await runChecks(ctx);
 
 	if (opts.json) {
@@ -163,7 +170,13 @@ async function main() {
 			// reports the entries the repair just removed. That is how a successful
 			// prune still exited 1.
 			if (wrote) {
-				finalResults = await runChecks(buildContext({ cwd: process.cwd(), offline: opts.offline }));
+				finalResults = await runChecks(
+					buildContext({
+						cwd: process.cwd(),
+						offline: opts.offline,
+						agentDirExplicit: Boolean(process.env.PI_CODING_AGENT_DIR),
+					}),
+				);
 			}
 		}
 	} else if (fixable.length) {

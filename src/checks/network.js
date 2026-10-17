@@ -20,6 +20,20 @@ import {
 
 export const group = "Network";
 
+/**
+ * Does this provider declare a header whose value is a credential?
+ *
+ * Matched by name, never by value: the values are the secrets. Pi interpolates
+ * `$NAME` in header values and sends them, so a header carrying a token is the
+ * same exposure as an `apiKey` and has to count the same way.
+ */
+function hasCredentialHeader(headers) {
+	if (!headers || typeof headers !== "object" || Array.isArray(headers)) return false;
+	return Object.keys(headers).some((name) =>
+		/(^|[-_])(authorization|auth|api[-_]?key|access[-_]?key|token|secret|password|bearer)([-_]|$)/i.test(name),
+	);
+}
+
 export async function run({ offline = false, agentDir: root, modelsFile, env = process.env }) {
 	const results = [];
 	const models = readJson(modelsFile);
@@ -127,7 +141,12 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 		// this guard from the start; userinfo went out as a Basic header, and
 		// `?key=…` gateways went out as part of the URL.
 		const hasQuery = url.search.length > 1;
-		const cleartextAuth = (hasKey || userinfo || hasQuery) && url.protocol === "http:" && !loopback;
+		// A custom header is a credential Pi interpolates and Pi sends, so a remote
+		// http:// endpoint whose only secret lives in `headers.Authorization` was
+		// reported clean by the one row that exists to catch exactly that. Names
+		// only — the values are never read here, let alone printed.
+		const headerAuth = hasCredentialHeader(provider.headers);
+		const cleartextAuth = (hasKey || userinfo || hasQuery || headerAuth) && url.protocol === "http:" && !loopback;
 		if (cleartextAuth) cleartext.push(name);
 		// A query string cannot be inspected for secrets, so it is not sent at all
 		// on a cleartext endpoint: dropping only the parts that look like keys
@@ -284,7 +303,11 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			// timeout) and for the ones that sit next to them.
 			hint: [
 				`${unhealthy.map((o) => `${o.name}: ${o.detail}`).join("; ")}.`,
-				...new Set(unhealthy.map((o) => o.hint).filter(Boolean)),
+				// Each hint is attributed. Unattributed, two endpoints failing for
+				// different reasons produced one paragraph whose sentences contradicted
+				// each other — "the request was cut off locally" followed by "the
+				// hostname does not resolve" — with nothing saying which was which.
+				...new Set(unhealthy.filter((o) => o.hint).map((o) => `${o.name}: ${o.hint}`)),
 				unhealthy.some((o) => !o.hint) ? "Check the baseUrl, whether the server is running, and whether a proxy is required." : "",
 			]
 				.filter(Boolean)
@@ -303,19 +326,20 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 	const dnsTargets = [...hosts].filter(([host]) => !isLoopbackHost(host));
 	const dnsChecks = await Promise.all(
 		dnsTargets.map(async ([host, provider]) => {
-			const res = await resolveHost(host);
-			if (!res.ok) {
-				// A deadline is this process giving up, not the resolver answering.
-				// Reporting it as "does not resolve" failed a host that resolves fine
-				// on a slow corporate resolver.
-				const timedOut = /timeout/i.test(String(res.error));
-				return {
-					host,
-					provider,
-					status: timedOut ? "warn" : "fail",
-					detail: timedOut ? `${host} resolution timed out — not proven broken` : `${host} does not resolve (${res.error})`,
-				};
-			}
+				const res = await resolveHost(host);
+				if (!res.ok) {
+					// A deadline is this process giving up, not the resolver answering.
+					// Reporting it as "does not resolve" failed a host that resolves fine
+					// on a slow corporate resolver.
+					return {
+						host,
+						provider,
+						status: res.timedOut ? "warn" : "fail",
+						detail: res.timedOut
+							? `${host} resolution timed out (${res.error}) — not proven broken`
+							: `${host} does not resolve — ${res.error}`,
+					};
+				}
 			const loopback = res.addresses.every((a) => a === "::1" || a.startsWith("127."));
 			if (loopback) {
 				return {
@@ -337,7 +361,7 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			title: "dns",
 			status: anyUnresolved ? "fail" : "warn",
 			detail: dnsProblems.map((p) => p.detail).join("; "),
-			hint: "Fix DNS or use a proxy. A hosts-file override is usually the fastest repair.",
+			hint: "Fix DNS or use a proxy, or pass --offline to skip every network check. A hosts-file override is usually the fastest repair.",
 		});
 	} else if (!dnsTargets.length) {
 		results.push({
@@ -361,6 +385,19 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 }
 
 /** One-line verdict for a provider probe, kept out of the ternary chain. */
+/**
+ * curl's own stderr, with the proxy it failed on replaced by its redacted form.
+ *
+ * curl quotes the configured proxy verbatim in `Could not resolve proxy: …`, so
+ * a proxy value that is nothing but a token reached the report through this
+ * path even though the row itself printed `(configured)`.
+ */
+function scrubCurlError(text, proxy) {
+	const scrubbed = scrubCredentials(String(text ?? ""));
+	if (!proxy) return scrubbed;
+	return scrubbed.split(String(proxy)).join(redactProxy(proxy));
+}
+
 /**
  * Probe one endpoint, through the proxy when one is configured.
  *
@@ -390,28 +427,22 @@ async function probeEndpoint(url, { headers, proxy }) {
 	}
 	if (!proxy) {
 		const res = await timedFetch(url.toString(), { headers });
-		// A request Node refuses to construct — a header value with a newline or a
-		// character outside Latin-1 — never opens a socket. Blaming the endpoint
-		// for it is the same mistake the curl path already avoids with
-		// `setupFailed`, and the config is where the fix is.
-		if (!res.status && /Headers|invalid header|Failed to parse URL|Invalid value|ByteString|Cannot convert argument/i.test(res.error ?? "")) {
-			// Not the error text: undici quotes the offending value, and the value
-			// here is the apiKey. `Headers.append: "sk-…" is an invalid header
-			// value` would put a key in the report, the TUI notification and the
-			// --json payload, and scrubCredentials only knows userinfo and query
-			// strings. The reader needs the cause, not the secret.
+		// A request Node refuses to construct never opens a socket. `describeNetError`
+		// already classifies that as `kind: "request"` without quoting the value —
+		// undici's own message embeds it, and the value here is the apiKey.
+		if (res.kind === "request") {
 			return { status: "skip", detail: "not probed: the request could not be built — a header value or baseUrl the fetch API rejects" };
 		}
 		// 401/403 means the endpoint is up and merely disagrees about auth, which
 		// is a configuration problem, not a reachability problem.
 		const alive = res.ok && (res.status === 200 || res.status === 401 || res.status === 403);
-		return { status: alive ? "ok" : "warn", detail: describeProbe(url, res, alive) };
+		return { status: alive ? "ok" : "warn", detail: describeProbe(url, res, alive), hint: probeHint(res) };
 	}
 	const res = await curlProbe(url.toString(), { proxy, headers });
 	if (res.setupFailed) {
 		// The probe never left the machine; blaming the endpoint would be a finding
 		// this check did not establish.
-		return { status: "skip", detail: `not probed: ${res.error}` };
+		return { status: "skip", detail: `not probed: ${scrubCurlError(res.error, proxy)}` };
 	}
 	if (res.missing) {
 		return { status: "skip", detail: "not probed: a proxy is configured but curl is not installed" };
@@ -431,20 +462,40 @@ async function probeEndpoint(url, { headers, proxy }) {
 	if (directAlive) {
 		return {
 			status: "warn",
-			detail: `${redactUrl(url.toString())} answered HTTP ${direct.status} directly but not ${through} (${scrubCredentials(res.error) || `HTTP ${code}`}) — Pi's own requests ignore https_proxy`,
+			detail: `${redactUrl(url.toString())} answered HTTP ${direct.status} directly but not ${through} (${scrubCurlError(res.error, proxy) || `HTTP ${code}`}) — Pi's own requests ignore https_proxy`,
 		};
 	}
 	return {
 		status: "warn",
-		detail: `${redactUrl(url.toString())} did not answer ${through}${code ? ` (HTTP ${code})` : ""}; ${scrubCredentials(res.error) || "no response"}${direct.status ? ` — and HTTP ${direct.status} directly` : ""}`,
+		detail: `${redactUrl(url.toString())} did not answer ${through}${code ? ` (HTTP ${code})` : ""}; ${scrubCurlError(res.error, proxy) || "no response"}${direct.status ? ` — and HTTP ${direct.status} directly` : ""}`,
 	};
 }
 
 function describeProbe(url, res, alive) {
-	// `url.origin` never carries userinfo, but `res.error` is fetch's own message
-	// and does quote the URL it failed on, so it is scrubbed before it can reach
-	// the report.
+	// `url.origin` never carries userinfo, and `res.error` is prose from
+	// `describeNetError`, so neither can quote a credential or an errno.
 	if (alive) return `${url.origin} reachable (HTTP ${res.status})`;
 	if (res.status) return `${url.origin} answered HTTP ${res.status}`;
-	return `${url.origin} unreachable (${scrubCredentials(res.error)})`;
+	// A local timeout is this process giving up. Saying "unreachable" asserted a
+	// fact about the endpoint that an 8s deadline did not establish, and the same
+	// file already refuses to make that claim on the DNS path.
+	if (res.aborted) {
+		// The deadline is already named by `error`; repeating it in parentheses made
+		// the line read "did not answer in time (no answer within 8s)".
+		return `${url.origin} did not answer within ${Math.round((res.timeoutMs ?? 8000) / 1000)}s — not proven unreachable`;
+	}
+	return `${url.origin} unreachable (${res.error})`;
+}
+
+/** Advice that matches the failure, rather than one sentence for all of them. */
+function probeHint(res) {
+	if (res.aborted) return "The request was cut off locally, which says nothing about the endpoint. Re-run, or raise the timeout on a slow link.";
+	if (res.kind === "ENOTFOUND" || res.kind === "EAI_AGAIN" || res.kind === "EAI_NODATA") {
+		return "The hostname does not resolve. Check the spelling of baseUrl, or the proxy or DNS settings of this machine.";
+	}
+	if (res.kind === "ECONNREFUSED") return "Nothing is listening on that host and port. Check that the server is running, and whether baseUrl has the right port.";
+	if (/^(CERT_|DEPTH_ZERO|SELF_SIGNED|UNABLE_TO_VERIFY|ERR_TLS|ERR_SSL)/.test(String(res.kind))) {
+		return "The TLS certificate was rejected. A corporate proxy that terminates TLS needs its CA added to Node's trust store.";
+	}
+	return "Check the baseUrl, whether the server is running, and whether a proxy is required.";
 }

@@ -81,11 +81,29 @@ test("packages: nothing on disk never reports green", async () => {
 
 test("packages: a missing directory offers a repair that matches the problem", async () => {
 	const root = tmpRoot();
-	writeJson(path.join(root, "settings.json"), { packages: ["npm:gone"] });
+	// A survivor in the list is what makes the repair meaningful: prune keeps the
+	// git source and drops the entry whose directory is gone.
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:gone", "git:https://github.com/me/ext"] });
 
 	const rows = byId(await packages.run(buildContext({ agentDir: root })));
 	assert.equal(rows.dirs.fix, "prune-missing-packages");
 	assert.equal(rows.dirs.fixTarget, path.join(root, "settings.json"));
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: no repair is offered when pruning would empty the list", async () => {
+	// Every entry is gone, which is also the signature of a mistyped
+	// PI_CODING_AGENT_DIR. The repair would refuse, so advertising it means
+	// offering the user a command that answers "no" — and the hint has to carry
+	// the reason instead.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:gone"] });
+
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows.dirs.status, "fail");
+	assert.equal(rows.dirs.fix, undefined);
+	assert.equal(rows.dirs.fixTarget, undefined);
+	assert.match(rows.dirs.hint, /PI_CODING_AGENT_DIR/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -763,6 +781,58 @@ test("packages: a pin that does not match the disk is a warning", async () => {
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("packages: a version string is scrubbed before it is cut, not after", async () => {
+	// The detail truncates the installed version at 40 characters. Cutting first
+	// put the `@` of a `https://user:pass@host` version past the cut, so
+	// scrubCredentials had no userinfo left to recognise and the password prefix
+	// went straight into the report, the TUI notification and the --json payload.
+	const root = tmpRoot();
+	installPkg(root, "leaky", { version: "1.0.0+https://alice:supersecret@registry.corp/x", pi: { extensions: ["./index.js"] } }, [
+		"index.js",
+	]);
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:leaky@0.9.1"] });
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows["version-pin"].status, "warn");
+	assert.doesNotMatch(rows["version-pin"].detail, /supersecret/);
+	assert.match(rows["version-pin"].detail, /\*\*\*@registry\.corp/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("packages: a package directory with no manifest is not a permissions problem", async () => {
+	// An empty or half-extracted directory is a broken install. Reporting it under
+	// "unreadable manifests" sent the reader to check ownership of a directory
+	// whose permissions were fine.
+	const root = tmpRoot();
+	fs.mkdirSync(path.join(root, "npm", "node_modules", "hollow"), { recursive: true });
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:hollow"] });
+
+	const rows = byId(await packages.run(buildContext({ agentDir: root })));
+	assert.equal(rows["manifests-missing"].status, "warn");
+	assert.match(rows["manifests-missing"].detail, /hollow/);
+	assert.match(rows["manifests-missing"].hint, /Reinstall/);
+	assert.equal(rows["manifests-unreadable"], undefined);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("binaries: no command resolved on PATH is not a clean shadowing result", async () => {
+	// `shadowed` compared the PATH hit against the shim. With nothing on PATH
+	// there is no comparison, and a green tick over zero inspected commands sat
+	// next to a row saying the commands were missing.
+	const root = tmpRoot();
+	installPkg(root, "hidden", { bin: { hidden: "./bin/hidden.js" }, pi: { extensions: ["./index.js"] } }, ["index.js"]);
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:hidden"] });
+	// The shim exists, so nothing is missing — but PATH is empty of it, which is
+	// the state a shell without the .bin directory in PATH produces.
+	const binDir = path.join(root, "npm", "node_modules", ".bin");
+	fs.mkdirSync(binDir, { recursive: true });
+	fs.writeFileSync(path.join(binDir, "hidden"), "#!/bin/sh\n");
+
+	const rows = byId(await binaries.run(buildContext({ agentDir: root, env: { PATH: "/nonexistent" } })));
+	assert.equal(rows.shadowed.status, "skip");
+	assert.match(rows.shadowed.detail, /no package command resolved/);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("binaries: a truncated list says how many names it left out", async () => {
 	// Six names printed under "8 package command(s)" reads as a contradiction.
 	const root = tmpRoot();
@@ -899,17 +969,19 @@ test("CLI: a successful prune repair exits 0, not 1", () => {
 	assert.doesNotMatch(fixed.stdout.split("Repairs")[1] ?? "", /✗ \d+ failed/, "the post-repair verdict still reports the repaired failure");
 });
 
-test("CLI: a prune that would empty the package list is refused", () => {
+test("CLI: a package list in which everything is missing is never emptied", () => {
 	// A wrong agent directory — a mistyped PI_CODING_AGENT_DIR, a second profile —
 	// makes every entry look missing. Deleting them all leaves Pi booting with no
-	// packages and no error, so the repair has to refuse rather than trust its own
-	// resolution blindly.
+	// packages and no error, so this tool does not offer that repair at all, and
+	// the two lines of defence are checked here: the check does not emit the fix,
+	// and the repair behind it refuses if it is ever asked.
 	const root = healthyRoot();
 	const settings = path.join(root, "settings.json");
 	fs.writeFileSync(settings, JSON.stringify({ packages: ["npm:gone", "npm:alsogone"] }));
 
-	const fixed = runCli(root, ["--offline", "--fix", "-y"]);
-	assert.match(fixed.stdout, /refusing to empty the list/);
+	const fixed = runCli(root, ["--offline", "--fix", "-y", "--verbose"]);
+	assert.doesNotMatch(fixed.stdout, /safe repair\(s\) available/);
+	assert.match(fixed.stdout, /PI_CODING_AGENT_DIR/);
 	assert.deepEqual(JSON.parse(fs.readFileSync(settings, "utf8")).packages, ["npm:gone", "npm:alsogone"]);
 	// Nothing was written, so no backup was left behind either.
 	assert.equal(fs.readdirSync(root).filter((f) => f.includes("checkup-bak")).length, 0);

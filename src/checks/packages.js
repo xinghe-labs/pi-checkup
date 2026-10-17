@@ -8,6 +8,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import {
+	describeFsError,
 	globExists,
 	isMissing,
 	makeRow,
@@ -96,6 +97,9 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 	const notDir = [];
 	const brokenManifest = [];
 	const unreadableManifest = [];
+	// A directory with no package.json at all is not a permissions problem and the
+	// hint for one ("check ownership") sent the reader looking in the wrong place.
+	const absentManifest = [];
 	const badSpecs = [];
 	const badExtensions = [];
 	const missingEntry = [];
@@ -133,7 +137,10 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 			// permission problem into a destructive repair.
 			const code = e?.code;
 			if (code === "ENOENT" || code === "ENOTDIR") missingDir.push(redactSource(source));
-			else unreadableDir.push(`${redactSource(source)} (${code ?? "error"})`);
+			// errno in the report is the least polished text in the whole tool;
+			// describeFsError has said "permission denied" for a while and this row
+			// was still printing `EACCES`.
+			else unreadableDir.push(`${redactSource(source)} (${describeFsError(e)})`);
 			continue;
 		}
 		if (!stat.isDirectory()) {
@@ -150,6 +157,7 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 			// read — EACCES, a file past the size limit — is unproven, and telling
 			// someone to reinstall over a permissions problem is wrong.
 			if (manifest.invalid) brokenManifest.push(redactSource(source));
+			else if (manifest.missing) absentManifest.push(redactSource(source));
 			else unreadableManifest.push(`${redactSource(source)} (${manifest.error ?? "unreadable"})`);
 			continue;
 		}
@@ -159,7 +167,11 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 		const pin = pinnedVersion(source);
 		const installed = manifest.data?.version;
 		if (pin && typeof installed === "string" && installed !== pin) {
-			versionMismatch.push(`${redactSource(source)} (installed ${scrubCredentials(installed.slice(0, 40))})`);
+			// Scrub first, slice after. Cutting at 40 bytes first put the `@` of a
+			// `https://user:pass@host` version string past the cut, leaving nothing
+			// for scrubCredentials to recognise — and it printed the password prefix
+			// into the report, the TUI notification and the --json payload.
+			versionMismatch.push(`${redactSource(source)} (installed ${scrubCredentials(installed).slice(0, 40)})`);
 		}
 		const declared = manifest.data?.pi?.extensions;
 		if (!declared) continue; // convention-directory package, nothing to verify
@@ -189,11 +201,21 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 	// Only a file this check read itself may be rewritten: "runtime" means the
 	// session's copy is authoritative, and "runtime-unreadable" means the file is
 	// a guess.
-	const canPrune = Boolean(settingsFile) && settingsSource === "file";
+	// Only offer the repair when it would actually go through. Pruning refuses to
+	// empty the list, because a wrong agent directory makes every entry look
+	// missing — so a settings.json whose every entry is gone must not advertise a
+	// repair that answers "no". Anything prune keeps (a git: source, an entry with
+	// no path, an unreadable directory) counts as a survivor.
+	const survivors =
+		present + unreadableDir.length + notDir.length + unverifiable.length + badSpecs.length;
+	const canPrune = Boolean(settingsFile) && settingsSource === "file" && survivors > 0;
 	if (missingDir.length) {
 		results.push(
 			row("dirs", "package dirs", "fail", `${missingDir.length} missing from node_modules: ${preview(missingDir, 3)}`, {
-				hint: "Run `pi install` again for the listed packages, or remove them from settings.json.",
+				hint: survivors
+					? "Run `pi install` again for the listed packages, or remove them from settings.json."
+					: // Every entry is gone, which is also what a mistyped PI_CODING_AGENT_DIR looks like. Deleting the whole list on that evidence would be worse than the finding, so the repair is not offered and the hint says so.
+						"Every entry in settings.json is gone from disk. Reinstall with `pi install`, or check that PI_CODING_AGENT_DIR points at the directory Pi uses — an empty list is not something this tool will write for you.",
 				// Dropping the entry is the only repair a static checker can offer;
 				// reinstalling needs the package manager and the network.
 				fix: canPrune ? "prune-missing-packages" : undefined,
@@ -230,6 +252,19 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 	}
 
 	// --- manifests ---------------------------------------------------------
+	if (absentManifest.length) {
+		results.push(
+			row(
+				"manifests-missing",
+				"missing manifests",
+				"warn",
+				`${absentManifest.length} package dir(s) hold no package.json: ${preview(absentManifest, 3)}`,
+				{
+					hint: "The directory exists but is not a package — an interrupted install, or a leftover folder. Reinstall the package, or remove the entry from settings.json.",
+				},
+			),
+		);
+	}
 	if (unreadableManifest.length) {
 		results.push(
 			row("manifests-unreadable", "unreadable manifests", "warn", `${unreadableManifest.length} package.json could not be inspected: ${preview(unreadableManifest, 2)}`, {

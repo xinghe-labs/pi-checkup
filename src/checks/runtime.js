@@ -31,7 +31,7 @@ function launcherHint(status, found) {
 	return "No Pi launcher was found. This report describes the files on disk; install Pi or run it from the directory that has one.";
 }
 
-export async function run({ offline = false, agentDir: root, env = process.env } = {}) {
+export async function run({ offline = false, agentDir: root, env = process.env, agentDirExplicit = false } = {}) {
 	const results = [];
 
 	// --- agent directory ---------------------------------------------------
@@ -39,13 +39,26 @@ export async function run({ offline = false, agentDir: root, env = process.env }
 	// and a green verdict: every check had skipped, so nothing had been looked at,
 	// and the reader was told the install was fine.
 	if (root && isMissing(root)) {
+		// Two situations, and only one of them is a problem with this run. An absent
+		// default ~/.pi/agent just means Pi has not been started here yet; a path
+		// the user passed in and got wrong is a broken invocation, and reporting it
+		// as a warning left a mistyped PI_CODING_AGENT_DIR exiting 0 in CI over an
+		// install that was never opened.
+		// Still a warning, not a failure: a directory Pi has not created yet is not
+		// damage, and `fail` is reserved for confirmed breakage. What changes when
+		// the path was named explicitly is where the reader should look — at the
+		// variable they typed, not at a default location this run never used.
 		results.push({
 			group,
 			id: "agent-dir",
 			title: "agent dir",
 			status: "warn",
-			detail: `${root} does not exist — nothing about an install was inspected`,
-			hint: "Run `pi` once to create it, or set PI_CODING_AGENT_DIR to the directory your install uses.",
+			detail: agentDirExplicit
+				? `${root} does not exist — PI_CODING_AGENT_DIR names a directory that is not there, so nothing was inspected`
+				: `${root} does not exist — nothing about an install was inspected`,
+			hint: agentDirExplicit
+				? "Check the value of PI_CODING_AGENT_DIR, or unset it to use ~/.pi/agent. Nothing was read from the install you meant to check."
+				: "Run `pi` once to create it, or set PI_CODING_AGENT_DIR to the directory your install uses.",
 		});
 	} else if (root && !canOpen(root)) {
 		// A directory this process cannot open is not a missing one, and "run pi

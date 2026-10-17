@@ -74,7 +74,7 @@ Packages
   ✓ entry files        13 manifest(s) resolve
 Binaries
   ✓ dangling links     19 links all resolve
-  ✓ shadowed names     none
+  · shadowed names     no package command resolved on PATH
   ! unreachable bins   6 package command(s) not on PATH: pi-web-access-mcp,
                        pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp,
                        pi-lens-analyze
@@ -95,17 +95,17 @@ Runtime
   ✓ disk               6% used, 950.7 GB free
   ✓ proxy              http://127.0.0.1:10808 accepting connections
 
-19 checks: 15 ok, 1 warning, 0 failed, 3 skipped
+19 checks: 14 ok, 1 warning, 0 failed, 4 skipped
 Run `npx pi-checkup --verbose` to show what to do about each finding.
 
-! 1 warning  ·  run /checkup inside Pi for registry checks
+! 1 warning, 4 skipped  ·  run /checkup inside Pi for registry checks
 ```
 
 Both captures below and above come from a real machine, taken with pi-checkup 0.1.0; free space, Node versions and which packages are installed are properties of that machine, not of the tool, and the row counts grow when checks are added.
 
 ## Real output
 
-This is an actual run on a working install, copied out of the TUI at 80 columns — not a mock-up. The two `Network` rows describe the moment it ran; everything else is a property of the install. 21 of 24 checks pass, two are skipped because there is genuinely nothing to look at, and the one warning is a real problem that `pi list` said nothing about:
+This is an actual run on a working install, copied out of the TUI at 80 columns — not a mock-up. The two `Network` rows describe the moment it ran; everything else is a property of the install. 20 of 24 checks pass, three are skipped because there is genuinely nothing to look at, and the one warning is a real problem that `pi list` said nothing about:
 
 ```text
 Registry
@@ -123,7 +123,7 @@ Packages
   ✓ entry files        13 manifest(s) resolve
 Binaries
   ✓ dangling links     19 links all resolve
-  ✓ shadowed names     none
+  · shadowed names     no package command resolved on PATH
   ! unreachable bins   6 package command(s) not on PATH: pi-web-access-mcp,
                        pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp,
                        pi-lens-analyze
@@ -144,7 +144,7 @@ Runtime
   ✓ disk               6% used, 950.7 GB free
   ✓ proxy              http://127.0.0.1:10808 accepting connections
 
-24 checks: 21 ok, 1 warning, 0 failed, 2 skipped
+24 checks: 20 ok, 1 warning, 0 failed, 3 skipped
 Run `/checkup verbose` to show what to do about each finding.
 ```
 
@@ -162,6 +162,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Missing directories | In `settings.json` but gone from `node_modules`. A version pin (`npm:name@1.2.3`) is resolved to the directory it installs into, not taken as part of the name |
 | | Version pins | `settings.json` pins an exact version and a different one is installed — the code that runs is not the code that was asked for. Ranges and tags are not compared, because the installer is free to satisfy them |
 | | Corrupt manifests | A `package.json` that parses as nothing — reported as a failure, because the package cannot load |
+| | Missing manifests | The package directory exists but holds no `package.json` — an interrupted install, or a leftover folder. Its own row, because telling someone to check ownership of a directory that has no manifest sends them to fix the wrong thing |
 | | Unreadable manifests | A `package.json` this process could not read (permissions, or larger than the 4 MB limit). Reported as a warning: unproven, not broken |
 | | Missing entry files | The manifest points at a build output that was never shipped |
 | | Not a package | A `packages` entry that points at a file instead of a directory. Reported without a repair: there is nothing to delete |
@@ -174,7 +175,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Unreadable links | A link that exists but cannot be followed (permissions, a loop) — reported, not called broken |
 | | Install leftovers | `.<name>-<random>` staging links in `.bin`: an install is running right now, or was interrupted. Its own finding, not a broken package |
 | | Missing shims | The package declares a `bin` but npm never linked it into `.bin` — usually an install run with `--ignore-scripts` |
-| | Shadowed names | A package's command name resolves to an unrelated program earlier on `PATH` |
+| | Shadowed names | A package's command name resolves to an unrelated program earlier on `PATH`. Skipped when no declared command resolved at all: there is nothing to compare, and a green tick there would sit next to a row saying the commands are missing |
 | | Unreachable bins | A package ships a CLI you cannot invoke by name |
 | **Network** | Endpoint reachability | Probes `<baseUrl>/models` for every provider. `401`/`403` counts as alive — this never validates your key and never spends tokens |
 | | Cleartext auth | A provider on `http://` to another machine with a credential configured — an `apiKey`, a password embedded in the `baseUrl`, or a query string, which cannot be inspected for secrets. The `apiKey` and `baseUrl` credentials are withheld from the probe; a query string is never sent, so that endpoint is reported unprobed. Loopback hosts are exempt |
@@ -186,7 +187,8 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Backups | Whether a broken config could be recovered at all |
 | **Runtime** | Agent directory | Whether the directory being inspected exists and can be listed — without it most other rows skip, which would otherwise read as a clean install |
 | | Node version, launcher, disk, proxy | The host conditions Pi itself needs |
-| **Any** | Crashed or timed-out module | A check that threw or ran past 30s is reported as a failure naming the module, and every other section still prints |
+
+The groups above are the ones that appear in a report, in that order. Independent of them: a check that throws, or runs past 30 seconds, is reported as a failure naming the module, and every other section still prints.
 
 ## `/checkup fix`
 
@@ -195,7 +197,7 @@ Only reversible repairs are automated, and inside a session it normally offers o
 1. **Restore a config file** that is no longer valid JSON, from its newest sibling backup. The broken copy is kept.
 
 2. **Collapse duplicate `packages` entries** in `settings.json`. Only byte-identical repeats are dropped: `"npm:a"` next to `{"source": "npm:a", "enabled": false}` carries different intent and is left alone.
-3. **Prune `packages` entries whose directory is gone** — the ones a reinstall did not bring back. Sources resolved by Pi itself (`git:`, `https:`) are never touched, and a prune that would remove every entry it can resolve is refused: that pattern means the agent directory is wrong, not that every package vanished.
+3. **Prune `packages` entries whose directory is gone** — the ones a reinstall did not bring back. Sources resolved by Pi itself (`git:`, `https:`) are never touched, and a prune that would leave the list empty is refused and never even offered: that pattern means the agent directory is wrong, not that every package vanished.
 
 Repairs 2 and 3 rewrite `settings.json`, so they need a settings file checkup actually read. Inside a session Pi hands checkup the settings from the *running process*, not the file on disk, and checkup will not rewrite a file it never read — so `/checkup fix` in-session offers repair 1, plus the other two only when Pi returned no settings and checkup read the file itself. If `getSettings()` threw, the fallback is still unverified and neither rewrite is offered. Stop Pi and run the CLI to be sure:
 
@@ -227,16 +229,16 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
 
 ## JSON output
 
-`/checkup json` prints the report as one object, delivered as a TUI notification — good for pasting into a bug report. For a pipe, use `npx pi-checkup --json`, which writes the same object to stdout, stamped with the version and platform that produced it. Two of the 24 entries are shown here:
+`/checkup json` prints the report as one object, delivered as a TUI notification — good for pasting into a bug report. For a pipe, use `npx pi-checkup --json`, which writes the same object to stdout, stamped with the version and platform that produced it. The excerpt below is from `/checkup json` inside a session — 24 entries, because the registry section has something to read there; the CLI emits the same shape with that section marked skipped. Two of the entries, and the summary, are shown here:
 
 ```json
 {
   "summary": {
     "total": 24,
-    "ok": 21,
+    "ok": 20,
     "warn": 1,
     "fail": 0,
-    "skip": 2
+    "skip": 3
   },
   "version": "0.1.0",
   "node": "22.23.3",
