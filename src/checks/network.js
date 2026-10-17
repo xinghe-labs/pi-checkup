@@ -279,7 +279,16 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			title: "providers",
 			status: unhealthy.some((o) => o.status === "fail") ? "fail" : "warn",
 			detail: `${unhealthy.length} of ${outcomes.length} unhealthy: ${truncateList(unhealthy.map((o) => o.name), 6)}`,
-			hint: `${unhealthy.map((o) => o.detail).join("; ")}. Check the baseUrl, whether the server is running, and whether a proxy is required.`,
+			// An outcome that knows why it failed brings its own advice; the generic
+			// sentence is only for the ones that do not (a refused connection, a
+			// timeout) and for the ones that sit next to them.
+			hint: [
+				`${unhealthy.map((o) => `${o.name}: ${o.detail}`).join("; ")}.`,
+				...new Set(unhealthy.map((o) => o.hint).filter(Boolean)),
+				unhealthy.some((o) => !o.hint) ? "Check the baseUrl, whether the server is running, and whether a proxy is required." : "",
+			]
+				.filter(Boolean)
+				.join(" "),
 		});
 	}
 
@@ -370,7 +379,14 @@ async function probeEndpoint(url, { headers, proxy }) {
 		(value) => value !== undefined && value !== null && /[\r\n]|[^\u0000-\u00ff]/.test(String(value)),
 	);
 	if (badHeader) {
-		return { status: "skip", detail: "not probed: a configured header value is not a valid HTTP header value (a newline or a non-Latin-1 character)" };
+		// A warning, not a skip: this is a fault in the config, not a probe that
+		// could not run. Nothing was sent, so the endpoint is still unjudged — the
+		// row must say that in the same breath, or it reads as "the server is down".
+		return {
+			status: "warn",
+			detail: "not probed: a configured header value cannot be sent as an HTTP header (a newline or a non-Latin-1 character)",
+			hint: "Fix the apiKey or headers for this provider in models.json — the value is rejected before the request leaves the machine.",
+		};
 	}
 	if (!proxy) {
 		const res = await timedFetch(url.toString(), { headers });

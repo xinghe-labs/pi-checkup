@@ -1473,9 +1473,13 @@ test("network: a rejected header value is not quoted back", async () => {
 		providers: { gw: { baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-live-bad\nvalue" } },
 	});
 	const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
-	assert.equal(rows.providers.status, "skip");
-	assert.doesNotMatch(rows.providers.detail, /sk-live-bad/);
-	assert.match(rows.providers.detail, /not a valid HTTP header value/);
+	// A warning, not a skip: the config is broken, and nothing was sent — the row
+	// has to say both, or a bad apiKey reads as "the server is down".
+	assert.equal(rows.providers.status, "warn");
+	assert.match(rows.providers.detail, /1 of 1 unhealthy: gw/);
+	assert.doesNotMatch(rows.providers.hint, /sk-live-bad/);
+	assert.match(rows.providers.hint, /gw: not probed: a configured header value cannot be sent/);
+	assert.match(rows.providers.hint, /models\.json/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -1490,9 +1494,10 @@ test("network: a header value outside Latin-1 is refused, not blamed on the endp
 		providers: { gw: { baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-live-k€y" } },
 	});
 	const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
-	assert.equal(rows.providers.status, "skip");
-	assert.doesNotMatch(rows.providers.detail, /sk-live|k€y|unreachable/);
-	assert.match(rows.providers.detail, /not a valid HTTP header value/);
+	assert.equal(rows.providers.status, "warn");
+	assert.doesNotMatch(JSON.stringify(rows), /sk-live|k€y/);
+	assert.doesNotMatch(rows.providers.hint, /unreachable/);
+	assert.match(rows.providers.hint, /cannot be sent as an HTTP header/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -1635,23 +1640,6 @@ test("config: a settings.json that cannot be opened is not reported as missing",
 	const pkg = byId(await packages.run(buildContext({ agentDir: root })));
 	assert.equal(pkg.installed.status, "warn");
 	assert.doesNotMatch(pkg.installed.detail, /not found/);
-	fs.rmSync(root, { recursive: true, force: true });
-});
-
-test("network: a header fetch refuses to build is not a dead endpoint", async () => {
-	// `fetch` rejects on a header value containing a newline before any socket is
-	// opened. Reporting "unreachable" blamed the endpoint for a config fault.
-	const root = tmpRoot();
-	writeJson(path.join(root, "settings.json"), { packages: [] });
-	writeJson(path.join(root, "models.json"), {
-		providers: { gw: { baseUrl: "http://127.0.0.1:9/v1", apiKey: "bad\nvalue" } },
-	});
-	const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
-	assert.equal(rows.providers.status, "skip");
-	assert.match(rows.providers.detail, /not probed/);
-	assert.doesNotMatch(rows.providers.detail, /unreachable/);
-	// The value fetch rejected is the key: it must not be in the row.
-	assert.doesNotMatch(rows.providers.detail, /bad/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
