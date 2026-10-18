@@ -254,15 +254,24 @@ export { redactProxy };
 /** Does something accept connections at this proxy's own address? */
 async function checkProxy(proxy, env = process.env) {
 	const shown = redactProxy(proxy);
+	// `redactProxy` returns a parenthesised placeholder for a value that is nothing
+	// but a credential, so wrapping it again printed "configured ((configured))
+	// but not a parsable URL"; saying "value hidden" is clearer than repeating
+	// the word configured.
+	const shownInParens = shown.startsWith("(") ? "(value hidden)" : `(${shown})`;
 	const row = (status, detail, hint) => ({ group, id: "proxy", title: "proxy", status, detail, hint });
-	let parsed;
+	let parsed = null;
 	try {
 		parsed = new URL(proxy);
 	} catch {
-		return row("warn", `configured (${shown}) but not a parsable URL`, "Expected something like http://127.0.0.1:10808.");
+		// Not fatal here: `127.0.0.1:10808` and `proxy.corp:8080` are both shapes
+		// curl accepts, and only the second one parses as a URL (its "scheme" is a
+		// dotted name). Returning early on the throw judged the same env value two
+		// different ways depending on whether the host happened to start with a
+		// digit. The textual fallback below decides.
 	}
-	let hostname = parsed.hostname;
-	let port = Number(parsed.port) || DEFAULT_PROXY_PORT[parsed.protocol] || 0;
+	let hostname = parsed?.hostname ?? "";
+	let port = Number(parsed?.port) || DEFAULT_PROXY_PORT[parsed?.protocol] || 0;
 	if (!hostname || !port) {
 		// `proxy.corp:8080` with no scheme is a shape curl accepts and this check
 		// used to warn about — the same env value, judged two different ways.
@@ -281,7 +290,7 @@ async function checkProxy(proxy, env = process.env) {
 		}
 	}
 	if (!hostname || !port) {
-		return row("warn", `configured (${shown}) without a usable host and port`);
+		return row("warn", `configured ${shownInParens} but not a parsable URL`, "Expected something like http://127.0.0.1:10808.");
 	}
 
 	// Opt-in end-to-end test: an explicit probe URL means the user asked for
@@ -301,10 +310,10 @@ async function checkProxy(proxy, env = process.env) {
 		if (probe.setupFailed) {
 			// The request never left the machine, so accusing the proxy would be a
 			// finding this check did not establish.
-			return row("skip", `configured (${shown}); the probe could not be set up: ${probe.error}`);
+			return row("skip", `configured ${shownInParens}; the probe could not be set up: ${probe.error}`);
 		}
 		if (probe.missing) {
-			return row("skip", `configured (${shown}); curl is not installed so forwarding was not tested`);
+			return row("skip", `configured ${shownInParens}; curl is not installed so forwarding was not tested`);
 		}
 		const code = probe.code;
 		const numeric = Number(code);

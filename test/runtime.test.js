@@ -118,3 +118,30 @@ test("a proxy that times out is a warning, not 'nothing listening'", async () =>
 	assert.equal(proxy.status, "warn");
 	assert.match(proxy.detail, /not proven down/);
 }, { timeout: 15000 });
+
+test("a proxy written without a scheme is probed, not called unparsable", async () => {
+	// `127.0.0.1:10808` is a shape curl accepts, but `new URL` throws on it (a
+	// scheme cannot start with a digit) while `proxy.corp:8080` parses (its
+	// "scheme" is a dotted name). The early return on the throw judged the same
+	// env value two different ways depending on whether the host began with a
+	// digit, and told the reader their working proxy was unparsable.
+	const dir = tmp();
+	const rows = await runtime.run({ agentDir: dir, env: { https_proxy: "127.0.0.1:1" } });
+	const proxy = rows.find((r) => r.id === "proxy");
+	assert.ok(proxy, JSON.stringify(rows));
+	assert.equal(proxy.status, "fail");
+	assert.match(proxy.detail, /nothing listening on 127\.0\.0\.1:1/);
+	assert.doesNotMatch(proxy.detail, /not a parsable URL/);
+});
+
+test("a proxy value that is only a credential is not announced as 'configured (configured)'", async () => {
+	// redactProxy already returns a parenthesised placeholder for such a value, so
+	// the row wrapped it a second time.
+	const dir = tmp();
+	const rows = await runtime.run({ agentDir: dir, env: { https_proxy: "sk-live-proxytoken" } });
+	const proxy = rows.find((r) => r.id === "proxy");
+	assert.equal(proxy.status, "warn");
+	assert.doesNotMatch(proxy.detail, /\(\(/);
+	assert.doesNotMatch(proxy.detail, /sk-live/);
+	assert.match(proxy.detail, /value hidden/);
+});
