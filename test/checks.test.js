@@ -1977,3 +1977,42 @@ test("packages: a manifest that parses to a non-object is a failure, not 'readab
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("registry: the source count covers every entry, not just the named ones", async () => {
+	// The count came from the named-only map, so a registry whose entries carry no
+	// `name` printed "2 registered ... across 0 sources" — two tools from no source
+	// at all — and a partly-named one understated the same number.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const pi = fakePi(
+		{ packages: [] },
+		[
+			{ sourceInfo: { path: "/x/a/i.js" } },
+			{ sourceInfo: { path: "/x/b/i.js" } },
+		],
+		[],
+	);
+	try {
+		const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
+		assert.equal(rows.tools.status, "ok");
+		assert.match(rows.tools.detail, /2 registered .* across 2 sources/);
+		// Nothing can be attributed, so the row is absent rather than claiming a
+		// subset is the whole picture.
+		assert.equal(rows.attribution, undefined);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("registry: a partly-named registry says how many entries it could not attribute", async () => {
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const pi = fakePi({ packages: [] }, [{ name: "t1", sourceInfo: { path: "/x/a/i.js" } }, { sourceInfo: { path: "/x/b/i.js" } }], []);
+	try {
+		const rows = byId(await registry.run(buildContext({ agentDir: root, pi })));
+		assert.match(rows.tools.detail, /across 2 sources/);
+		assert.match(rows.attribution.detail, /1 entry carries no name and cannot be attributed/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});

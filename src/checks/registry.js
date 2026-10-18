@@ -72,6 +72,12 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 		commandsByOwner.get(owner).push(command.name);
 	}
 	const toolsNamed = [...toolsByOwner.values()].reduce((n, list) => n + list.length, 0);
+	// Counted from every entry, not from `toolsByOwner`: that map only holds the
+	// named ones, so a registry whose entries carry no `name` printed
+	// "2 registered ... across 0 sources" — two tools from no source at all. A
+	// partly-named registry understated the same number.
+	const toolsSources = new Set(tools.map((tool) => ownerOf(tool?.sourceInfo?.path)));
+	const commandsSources = new Set(commands.map((command) => ownerOf(command?.sourceInfo?.path)));
 
 	// `sourceInfo.path` is a third-party field: a number here threw out of run()
 	// and replaced the whole Registry group with one crash row.
@@ -86,7 +92,7 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 					// started with tools disabled, and "0 registered across 0 sources"
 					// with a tick reads like everything is accounted for.
 					status: tools.length ? "ok" : "skip",
-					detail: `${tools.length} registered (${tools.length - builtinTools} extension, ${builtinTools} builtin) across ${toolsByOwner.size} sources`,
+					detail: `${tools.length} registered (${tools.length - builtinTools} extension, ${builtinTools} builtin) across ${toolsSources.size} sources`,
 				}
 			: {
 					group,
@@ -111,7 +117,7 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 			// pass. "0 registered across 0 sources" with a tick claims an answer
 			// the check does not have.
 			status: commands.length ? "ok" : "skip",
-			detail: `${commands.length} registered across ${commandsByOwner.size} sources, ${serverCount}`,
+			detail: `${commands.length} registered across ${commandsSources.size} sources, ${serverCount}`,
 		});
 	} else {
 		results.push({
@@ -141,7 +147,7 @@ export async function run({ pi, hasRuntime, settings, agentDir: root }) {
 			id: "attribution",
 			title: "attribution",
 			status: "ok",
-			detail: `${toolsNamed} tool(s) from ${toolsByOwner.size} source(s): ${truncateList(ranked, 4)}`,
+			detail: `${toolsNamed} tool(s) from ${toolsByOwner.size} source(s): ${truncateList(ranked, 4)}${tools.length > toolsNamed ? ` (${tools.length - toolsNamed} entr${tools.length - toolsNamed === 1 ? "y carries" : "ies carry"} no name and cannot be attributed)` : ""}`,
 			hint: `Run with --verbose for the tool names. ${attribution}`,
 		});
 	}
