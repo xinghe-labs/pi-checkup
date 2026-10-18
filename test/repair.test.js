@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { applyDedupePackages, applyPruneMissingPackages, applyRepairs, applyRestoreConfig } from "../src/repair.js";
+import { applyDedupePackages, applyPruneMissingPackages, applyRepairs, applyRestoreConfig, writeAtomic } from "../src/repair.js";
 import { buildContext } from "../src/context.js";
 
 function tmp() {
@@ -408,4 +408,35 @@ test("a failed write leaves no temp file behind", () => {
 	const leftovers = fs.readdirSync(dir).filter((n) => n.includes("checkup-tmp-"));
 	assert.deepEqual(leftovers, []);
 	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("writeAtomic refuses to rename a truncated temp file over the target", () => {
+	// A short write (ENOSPC/EIO) can leave the temp file short without surfacing
+	// as a writeFileSync throw. Renaming it over the config would turn a
+	// repairable fault into a corrupt config, so the byte count is verified.
+	// Simulated by shrinking what fstatSync reports — the one seam the guard reads.
+	const realFstat = fs.fstatSync;
+	fs.fstatSync = function (fd, ...args) {
+		const st = realFstat.call(fs, fd, ...args);
+		return { ...st, size: Math.max(0, st.size - 5) };
+	};
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "repair-trunc-"));
+	try {
+		const target = path.join(root, "settings.json");
+		fs.writeFileSync(target, '{"packages":[]}');
+		const original = fs.readFileSync(target, "utf8");
+		assert.throws(() => writeAtomic(target, '{"packages":["npm:x"]}\n'), /truncated/);
+		assert.equal(fs.readFileSync(target, "utf8"), original);
+	} finally {
+		fs.fstatSync = realFstat;
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a repair failure message is scrubbed like every other error path", async () => {
+	// The one applied.push that skipped scrubCredentials: an fs error quoting a
+	// token-bearing path reached --fix stdout and the /checkup notification.
+	const applied = await applyRepairs([{ title: "t", fix: "prune-missing", fixTarget: "git:https://user:ghp_sekrit@github.com/me/x" }], { agentDir: undefined });
+	assert.equal(applied[0].ok, false);
+	assert.doesNotMatch(JSON.stringify(applied), /ghp_sekrit/);
 });

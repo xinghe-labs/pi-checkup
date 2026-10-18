@@ -105,3 +105,15 @@ test("an IPv6 proxy literal is probed without its brackets", async () => {
 	assert.match(proxy.detail, /::1:1/);
 	assert.doesNotMatch(proxy.detail, /ENOTFOUND/);
 });
+
+test("a proxy that times out is a warning, not 'nothing listening'", async () => {
+	// The 3s deadline is this process's. A blackholed address (TEST-NET-3, never
+	// routable) must not be reported as a confirmed-dead proxy — that is the
+	// same local-timeout-blamed-on-the-remote mistake the network checks avoid.
+	const dir = tmp();
+	const rows = await runtime.run({ agentDir: dir, env: { https_proxy: "http://203.0.113.1:3128" } });
+	const proxy = rows.find((r) => r.id === "proxy");
+	assert.ok(proxy, JSON.stringify(rows));
+	assert.equal(proxy.status, "warn");
+	assert.match(proxy.detail, /not proven down/);
+}, { timeout: 15000 });

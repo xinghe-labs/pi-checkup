@@ -62,7 +62,22 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 		];
 	}
 
-	const providers = models.data?.providers ?? models.data ?? {};
+	// `providers` must be a non-null object. The `??` fallthrough to the whole
+	// file made two wrong shapes read as content: `"providers": null` iterated the
+	// top-level keys as if they were providers, and `"providers": 5` silently
+	// became "no provider with a baseUrl" — a claim about a config whose
+	// providers key is a number. Feeding the bad value back through the normal
+	// entry loop makes it land in the named shape row instead.
+	const fileData = models.data && typeof models.data === "object" && !Array.isArray(models.data) ? models.data : {};
+	const rawProviders = fileData.providers;
+	let providers;
+	if (rawProviders === undefined) {
+		providers = fileData;
+	} else if (rawProviders && typeof rawProviders === "object" && !Array.isArray(rawProviders)) {
+		providers = rawProviders;
+	} else {
+		providers = { providers: rawProviders };
+	}
 
 	// Worked out before the offline branch: whether a key would cross the network
 	// in the clear is a property of the config, not of the probe. Skipping it in
@@ -453,8 +468,10 @@ async function probeEndpoint(url, { headers, proxy }) {
 		// check exists to report, and reporting it as a warning exited 0 — CI and
 		// `npx pi-checkup && start-pi` sailed past the one row that said unhealthy.
 		// Only a local timeout stays a warning: the deadline is this process's, and
-		// the detail already refuses to call the endpoint unreachable.
-		const failed = !alive && !res.aborted && !res.status;
+		// the detail already refuses to call the endpoint unreachable. A response
+		// status — 503 and 404 included — is a definitive answer from the endpoint,
+		// so the comment above and the status have to agree.
+		const failed = !alive && !res.aborted;
 		return { status: alive ? "ok" : failed ? "fail" : "warn", detail: describeProbe(url, res, alive), hint: probeHint(res) };
 	}
 	const res = await curlProbe(url.toString(), { proxy, headers });

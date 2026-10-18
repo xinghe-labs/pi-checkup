@@ -320,13 +320,23 @@ async function checkProxy(proxy, env = process.env) {
 	}
 
 	const probe = await tcpProbe(bareHost(hostname), port);
-	return probe.ok
-		? row("ok", `${shown} accepting connections`, "Set PI_CHECKUP_PROBE_URL to test real forwarding through it.")
-		: row("fail", `nothing listening on ${shown} (${probe.error})`, "The proxy process is probably not running.");
+	if (probe.ok) {
+		return row("ok", `${shown} accepting connections`, "Set PI_CHECKUP_PROBE_URL to test real forwarding through it.");
+	}
+	// The 3s deadline is this process's. Folding it into the same branch as a
+	// refused connection reported a slow or firewalled proxy as "nothing
+	// listening" — the same local-timeout-blamed-on-the-remote mistake the
+	// network checks were rewritten to avoid.
+	if (probe.timedOut) {
+		return row("warn", `${shown} did not answer within ${Math.round(tcpProbeTimeoutMs / 1000)}s — not proven down`, "A slow or firewalled proxy looks like this. If it is supposed to be running, check that host and port directly.");
+	}
+	return row("fail", `nothing listening on ${shown} (${probe.error})`, "The proxy process is probably not running.");
 }
 
+const tcpProbeTimeoutMs = 3000;
+
 /** Plain TCP connect, so the proxy check causes no third-party traffic. */
-function tcpProbe(host, port, timeout = 3000) {
+function tcpProbe(host, port, timeout = tcpProbeTimeoutMs) {
 	return new Promise((resolve) => {
 		let socket;
 		let settled = false;
@@ -344,7 +354,7 @@ function tcpProbe(host, port, timeout = 3000) {
 		}
 		socket.setTimeout(timeout);
 		socket.once("connect", () => finish({ ok: true }));
-		socket.once("timeout", () => finish({ ok: false, error: "timed out" }));
+		socket.once("timeout", () => finish({ ok: false, timedOut: true, error: "timed out" }));
 		socket.once("error", (e) => finish({ ok: false, error: String(e?.message ?? e) }));
 	});
 }

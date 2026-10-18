@@ -506,7 +506,7 @@ test("registry: two unattributed registrations of one name are a collision", asy
 
 test("registry: a package declaring an empty extensions list is not silent", async () => {
 	const root = tmpRoot();
-	const dir = installPkg(root, "nothing", { pi: { extensions: [] } });
+	installPkg(root, "nothing", { pi: { extensions: [] } });
 	const settings = { packages: ["npm:nothing"] };
 
 	const ctx = buildContext({ agentDir: root, pi: fakePi(settings, []) });
@@ -1852,5 +1852,42 @@ test("runtime: a proxy that answers 407 did not forward the request", { skip: ha
 	} finally {
 		server.close();
 	}
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("network: an HTTP error status is a failure, not just a refused socket", async () => {
+	// 503 is an answer from the endpoint itself. Folding it into the warning
+	// branch exited 0 for a provider that said "no" in plain HTTP — the same
+	// false confidence a refused connection was fixed to remove.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	const http = await import("node:http");
+	const server = http.createServer((req, res) => {
+		res.writeHead(503);
+		res.end();
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	try {
+		writeJson(path.join(root, "models.json"), {
+			providers: { p: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, apiKey: "k" } },
+		});
+		const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
+		assert.equal(rows.providers.status, "fail");
+	} finally {
+		server.close();
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("network: a non-object providers value is named, not silently dropped", async () => {
+	// `"providers": 5` used to fall through to "no provider with a baseUrl" — a
+	// claim about a config whose providers key is a number.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: 5 });
+	const rows = byId(await network.run(buildContext({ agentDir: root, env: {} })));
+	const detail = JSON.stringify(rows);
+	assert.match(detail, /not a provider object/);
+	assert.doesNotMatch(detail, /no provider with a baseUrl/);
 	fs.rmSync(root, { recursive: true, force: true });
 });

@@ -5,9 +5,6 @@
 // The registry checks need a live process and report skipped here. Everything
 // else (packages, binaries, config, runtime, and network unless --offline) runs
 // exactly as it does inside Pi.
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { runChecks } from "../src/checks/index.js";
 import { buildContext } from "../src/context.js";
 import { renderReport, renderVerdict, toJson } from "../src/render.js";

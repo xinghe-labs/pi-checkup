@@ -122,6 +122,10 @@ function declaredBins(settings, root) {
 			if (base) names.add(base);
 			continue;
 		}
+		// An array is not a shape npm accepts, and Object.keys(["a","b"]) yields
+		// "0" and "1" — command names that cannot exist, later reported as missing
+		// shims or unreachable bins. Skip the entry instead of inventing rows.
+		if (Array.isArray(bin) || typeof bin !== "object") continue;
 		for (const key of Object.keys(bin)) names.add(key);
 	}
 	return names;

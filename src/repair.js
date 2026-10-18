@@ -6,7 +6,7 @@
 // and none of them deletes a package or disables an extension.
 import fs from "node:fs";
 import path from "node:path";
-import { isMissing, newestBackup, readJson, redactSource, resolvePackageDir, sourceOf } from "./util.js";
+import { isMissing, newestBackup, readJson, redactSource, resolvePackageDir, scrubCredentials, sourceOf } from "./util.js";
 
 function stamp() {
 	// Milliseconds are kept: two repairs in the same second would otherwise
@@ -67,7 +67,7 @@ function syncDir(dir) {
  * The temp file is fsynced before the rename and the directory after it, so a
  * power loss cannot leave the rename visible while the new content is not.
  */
-function writeAtomic(target, content) {
+export function writeAtomic(target, content) {
 	// A dotfiles-style install keeps settings.json as a symlink into a repo. A
 	// plain rename over `target` would replace the symlink with a regular file and
 	// silently detach the config from its repository, so the write lands on the
@@ -103,6 +103,14 @@ function writeAtomic(target, content) {
 	try {
 		fs.writeFileSync(fd, content);
 		fs.fsyncSync(fd);
+		// A short write (ENOSPC on a full volume, EIO on a dying disk) can leave the
+		// temp file with fewer bytes than were handed in — writeFileSync's throw is
+		// not guaranteed to surface every partial-write shape. Renaming a truncated
+		// file over the config would turn a repairable fault into a corrupt config,
+		// so the byte count is verified before the rename, not trusted after it.
+		if (fs.fstatSync(fd).size !== Buffer.byteLength(content)) {
+			throw new Error(`temp file is truncated (${fs.fstatSync(fd).size} of ${Buffer.byteLength(content)} bytes)`);
+		}
 		fs.closeSync(fd);
 		fd = undefined;
 		if (mode !== undefined) fs.chmodSync(tmp, mode);
@@ -157,8 +165,21 @@ export function applyRestoreConfig(target) {
 	if (!parsed.ok) return { ok: false, message: `nothing to restore from: ${unreadable(backup, parsed).message}` };
 	const aside = copyBackup(target, "broken");
 	// The backup is valid JSON (checked above), so restoring its bytes verbatim
-	// keeps any formatting the user had.
-	writeAtomic(target, fs.readFileSync(backup, "utf8"));
+	// keeps any formatting the user had. If the write itself fails after the
+	// rename (the directory sync is the one step that can), the backup made two
+	// lines ago is copied back over the target — rethrowing alone would leave the
+	// config in whatever state the interrupted write left it in.
+	try {
+		writeAtomic(target, fs.readFileSync(backup, "utf8"));
+	} catch (e) {
+		try {
+			fs.copyFileSync(backup, target);
+		} catch {
+			// The rollback failed too; surface the original error, which is what the
+			// user needs, and let the kept broken copy + backup be the recovery path.
+		}
+		throw e;
+	}
 	return {
 		ok: true,
 		changed: true,
@@ -336,7 +357,10 @@ export async function applyRepairs(findings, { agentDir } = {}) {
 		try {
 			applied.push(repair(finding.fixTarget, agentDir));
 		} catch (e) {
-			applied.push({ ok: false, message: `${finding.title}: ${String(e?.message ?? e)}` });
+			// Scrubbed like every other error path: fs errors embed absolute paths and
+			// the prune guard's throw can quote a package source, which may carry a
+			// token. This string reaches --fix stdout and the /checkup notification.
+			applied.push({ ok: false, message: `${finding.title}: ${scrubCredentials(String(e?.message ?? e))}` });
 		}
 	}
 	return applied;
