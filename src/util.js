@@ -688,7 +688,11 @@ export function redactUrl(raw) {
 		// Printing `url.origin` would then print the string "null".
 		if (!url.hostname) return scrubCredentials(text);
 		const path = url.pathname === "/" ? "" : url.pathname;
-		return `${url.protocol}//${url.host}${path}`;
+		// Scrubbed, not returned raw: a gateway that takes its key in the path —
+		// `https://host/ghp_…/v1` — put the credential back into the report through
+		// the one function whose job is to keep it out. The host itself cannot
+		// match a token shape, so scrubbing the assembled string is safe.
+		return scrubCredentials(`${url.protocol}//${url.host}${path}`);
 	} catch {
 		return scrubCredentials(text);
 	}
@@ -812,6 +816,29 @@ export function scrubCredentials(text) {
 			// `npm:alice:pw@host` and the single slash in `https:/alice:pw@host`
 			// still start a match.
 			.replace(/(^|[\s"'=(,:/])(?!(?:npm|git|file|https?|ssh|link):)([^\s/@:'"]+):([^\s/@]*?)@/g, "$1***@")
+			// A bare token has no userinfo and no query string for the rules above to
+			// find. An error message that quoted one — "extension load failed for
+			// provider openai with apiKey sk-…" — reached the report, the TUI
+			// notification and --json verbatim, minus whatever the caller's own
+			// truncation happened to cut. These are the shapes that carry enough
+			// entropy to be a real credential and enough of a fixed prefix to be
+			// recognised without guessing.
+			.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g, "***")
+			.replace(/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "***")
+			.replace(/\bgithub_pat_[A-Za-z0-9_]{20,}/g, "***")
+			.replace(/\bnpm_[A-Za-z0-9]{20,}/g, "***")
+			.replace(/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, "***")
+			.replace(/\bAKIA[0-9A-Z]{16}\b/g, "***")
+			.replace(/\bAIza[0-9A-Za-z_-]{30,}/g, "***")
+			// A JWT is three base64url segments and is what an `Authorization`
+			// header usually holds.
+			.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, "***")
+			.replace(/\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 ***")
+			// The value after a credential-named key, whatever shape it has: a token
+			// with no recognisable prefix is still a token when the line says
+			// `apiKey: …`. The value stops at whitespace and at the punctuation that
+			// ends a sentence, so surrounding prose survives.
+			.replace(/\b(api[-_]?key|access[-_]?token|auth[-_]?token|token|secret|password|passwd)\s*([:=])\s*[^\s,;)"']+/gi, "$1$2***")
 			// A query string is dropped whole rather than masked: it is where a pasted
 			// `?key=sk-…` lives, and nothing in a report needs it.
 			.replace(/\?[^\s]*/g, "")

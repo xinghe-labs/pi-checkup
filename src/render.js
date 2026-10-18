@@ -25,6 +25,41 @@ export function toJson(results, extra = {}) {
 }
 
 /**
+ * Columns a string occupies, not code units.
+ *
+ * A CJK path — `C:\Users\张三\.pi\agent` — is one code unit per character and
+ * two columns on every terminal, so measuring with `.length` wrapped one column
+ * short and let the line spill past the width the report promises to respect.
+ */
+function displayWidth(text) {
+	let width = 0;
+	for (const ch of String(text ?? "")) {
+		const cp = ch.codePointAt(0);
+		// Combining marks and zero-width joiners occupy no column of their own.
+		if (cp === 0x200b || cp === 0xfeff || (cp >= 0x0300 && cp <= 0x036f)) continue;
+		const wide =
+			(cp >= 0x1100 && cp <= 0x115f) ||
+			(cp >= 0x2e80 && cp <= 0x303e) ||
+			(cp >= 0x3041 && cp <= 0x33ff) ||
+			(cp >= 0x3400 && cp <= 0x4dbf) ||
+			(cp >= 0x4e00 && cp <= 0x9fff) ||
+			(cp >= 0xa000 && cp <= 0xa4cf) ||
+			(cp >= 0xa960 && cp <= 0xa97f) ||
+			(cp >= 0xac00 && cp <= 0xd7a3) ||
+			(cp >= 0xf900 && cp <= 0xfaff) ||
+			(cp >= 0xfe10 && cp <= 0xfe19) ||
+			(cp >= 0xfe30 && cp <= 0xfe6f) ||
+			(cp >= 0xff00 && cp <= 0xff60) ||
+			(cp >= 0xffe0 && cp <= 0xffe6) ||
+			(cp >= 0x1f300 && cp <= 0x1f64f) ||
+			(cp >= 0x1f900 && cp <= 0x1f9ff) ||
+			(cp >= 0x20000 && cp <= 0x3fffd);
+		width += wide ? 2 : 1;
+	}
+	return width;
+}
+
+/**
  * Greedy word wrap. `indent` is the column the text starts at, so every line has
  * the same available width and continuation lines line up under the text they
  * continue.
@@ -33,32 +68,59 @@ export function toJson(results, extra = {}) {
  * chunks rather than left to overflow: the terminal would wrap it anyway, and it
  * would do so with no indent, which breaks the column alignment that makes the
  * report scannable.
+ *
+ * Widths are display columns, not code units: see `displayWidth`.
  */
 function wrapText(text, width, indent) {
 	const body = String(text ?? "");
 	if (!body) return [""];
 	const avail = Math.max(8, width - indent);
-	if (body.length <= avail) return [body];
+	if (displayWidth(body) <= avail) return [body];
 
 	const lines = [];
 	let line = "";
+	let lineWidth = 0;
 	const flush = () => {
 		if (line) {
 			lines.push(line);
 			line = "";
+			lineWidth = 0;
 		}
 	};
 	for (const word of body.split(/\s+/).filter(Boolean)) {
-		if (word.length > avail) {
+		const wordWidth = displayWidth(word);
+		if (wordWidth > avail) {
 			flush();
-			for (let i = 0; i < word.length; i += avail) lines.push(word.slice(i, i + avail));
+			// Cut the long token into pieces that fit, measured in columns so a
+			// wide character cannot straddle the edge.
+			let piece = "";
+			let pieceWidth = 0;
+			for (const ch of word) {
+				const cw = displayWidth(ch);
+				if (pieceWidth + cw > avail) {
+					lines.push(piece);
+					piece = "";
+					pieceWidth = 0;
+				}
+				piece += ch;
+				pieceWidth += cw;
+			}
+			if (piece) {
+				line = piece;
+				lineWidth = pieceWidth;
+			}
 			continue;
 		}
-		if (!line) line = word;
-		else if (line.length + 1 + word.length <= avail) line += ` ${word}`;
-		else {
+		if (!line) {
+			line = word;
+			lineWidth = wordWidth;
+		} else if (lineWidth + 1 + wordWidth <= avail) {
+			line += ` ${word}`;
+			lineWidth += 1 + wordWidth;
+		} else {
 			flush();
 			line = word;
+			lineWidth = wordWidth;
 		}
 	}
 	flush();
@@ -92,7 +154,7 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 	// push a single row's detail out of alignment with every other row. A title
 	// longer than the cap gets its detail on its own line rather than shoving it
 	// past the column every wrapped continuation line uses.
-	const titleWidth = Math.min(22, Math.max(8, ...results.map((r) => r.title.length)));
+	const titleWidth = Math.min(22, Math.max(8, ...results.map((r) => displayWidth(r.title))));
 	// Below this width the title column plus one word of detail leaves a gutter
 	// too narrow to read ("package dirs 2 missing from" then two words a line), so
 	// the detail moves under the title instead of beside it.
@@ -105,7 +167,7 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 		for (const r of byGroup.get(g)) {
 			const mark = `  ${MARKS[r.status] ?? "?"} `;
 			const title = r.title.padEnd(titleWidth);
-			if (stacked || r.title.length > titleWidth) {
+			if (stacked || displayWidth(r.title) > titleWidth) {
 				// The title gets the same treatment as the detail: a name that does not
 				// fit would otherwise set the width for the whole report.
 				const titleParts = wrapText(r.title, width, mark.length);

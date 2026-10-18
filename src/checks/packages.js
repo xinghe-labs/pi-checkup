@@ -96,6 +96,7 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 	const unreadableDir = [];
 	const notDir = [];
 	const brokenManifest = [];
+	const nonObjectManifest = [];
 	const unreadableManifest = [];
 	// A directory with no package.json at all is not a permissions problem and the
 	// hint for one ("check ownership") sent the reader looking in the wrong place.
@@ -159,6 +160,15 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 			if (manifest.invalid) brokenManifest.push(redactSource(source));
 			else if (manifest.missing) absentManifest.push(redactSource(source));
 			else unreadableManifest.push(`${redactSource(source)} (${manifest.error ?? "unreadable"})`);
+			continue;
+		}
+		// Valid JSON that is not an object — `null`, `"nope"`, `[]` — is not a
+		// manifest: nothing can read `.name`, `.version` or `.pi` off it, and the
+		// package cannot load. Counting it as "readable" put a green tick on a
+		// broken install, right next to an `entry files` row that skipped because
+		// the manifest declared nothing.
+		if (!manifest.data || typeof manifest.data !== "object" || Array.isArray(manifest.data)) {
+			nonObjectManifest.push(`${redactSource(source)} (${manifest.data === null ? "null" : Array.isArray(manifest.data) ? "an array" : typeof manifest.data})`);
 			continue;
 		}
 		manifestRead++;
@@ -272,19 +282,16 @@ export async function run({ settings, settingsLoaded, agentDir: root, settingsFi
 			}),
 		);
 	}
-	if (brokenManifest.length) {
+	if (brokenManifest.length || nonObjectManifest.length) {
+		const parts = [];
+		if (brokenManifest.length) parts.push(`${brokenManifest.length} package.json not valid JSON: ${preview(brokenManifest, 3)}`);
+		if (nonObjectManifest.length) parts.push(`${nonObjectManifest.length} package.json not a JSON object: ${preview(nonObjectManifest, 3)}`);
 		results.push(
-			row(
-				"manifests",
-				"manifests",
-				"fail",
-				`${brokenManifest.length} package.json not valid JSON: ${preview(brokenManifest, 3)}`,
-				{
-					// A run that overlaps an install sees a manifest mid-rename. Saying so
-					// is the difference between "reinstall everything" and "wait 30 seconds".
-					hint: "Reinstall the affected packages. If an install or update is running right now, re-run once it finishes.",
-				},
-			),
+			row("manifests", "manifests", "fail", parts.join("; "), {
+				// A run that overlaps an install sees a manifest mid-rename. Saying so
+				// is the difference between "reinstall everything" and "wait 30 seconds".
+				hint: "Reinstall the affected packages. If an install or update is running right now, re-run once it finishes.",
+			}),
 		);
 	} else if (manifestRead) {
 		results.push(row("manifests", "manifests", "ok", `${manifestRead} readable`));

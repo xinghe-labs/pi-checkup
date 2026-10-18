@@ -166,7 +166,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | **Packages** | Package list | Whether `settings.json` could be read at all — a hand-edited file that does not parse is reported as unreadable, not as "no packages" |
 | | Missing directories | In `settings.json` but gone from `node_modules`. A version pin (`npm:name@1.2.3`) is resolved to the directory it installs into, not taken as part of the name |
 | | Version pins | `settings.json` pins an exact version and a different one is installed — the code that runs is not the code that was asked for. Ranges and tags are not compared, because the installer is free to satisfy them |
-| | Corrupt manifests | A `package.json` that parses as nothing — reported as a failure, because the package cannot load |
+| | Corrupt manifests | A `package.json` that does not parse, or that parses to something other than an object (`null`, `"nope"`, `[]`) — reported as a failure, because the package cannot load. An empty object still counts as readable |
 | | Missing manifests | The package directory exists but holds no `package.json` — an interrupted install, or a leftover folder. Its own row, because telling someone to check ownership of a directory that has no manifest sends them to fix the wrong thing |
 | | Unreadable manifests | A `package.json` this process could not read (permissions, or larger than the 4 MB limit). Reported as a warning: unproven, not broken |
 | | Missing entry files | The manifest points at a build output that was never shipped |

@@ -576,3 +576,56 @@ test("redactSource reads a Windows path instead of calling it unparsable", () =>
 		assert.equal(redactSource(secret), "(unparsable value)");
 	}
 });
+
+test("renderReport wraps by display columns, so a CJK path stays inside the width", () => {
+	// `.length` counts code units. A CJK character is one code unit and two
+	// terminal columns, so a Chinese or Japanese path measured one column short
+	// and the line spilled past the width the report promises to respect.
+	const width = (text) =>
+		[...text].reduce((n, ch) => {
+			const cp = ch.codePointAt(0);
+			const wide = (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe6f) || (cp >= 0xff00 && cp <= 0xff60);
+			return n + (wide ? 2 : 1);
+		}, 0);
+	const detail = "/home/张三/文档/.pi/agent/settings.json is not valid JSON — the file could not be parsed at all";
+	const report = renderReport([{ group: "Config", id: "x", title: "settings.json", status: "fail", detail }], { width: 80 });
+	for (const line of report.split("\n")) {
+		assert.ok(width(line) <= 80, `line is ${width(line)} columns: ${JSON.stringify(line)}`);
+	}
+	// Plain ASCII output is unchanged by the switch.
+	const ascii = renderReport([{ group: "Config", id: "x", title: "settings.json", status: "fail", detail: "plain ascii detail that is short" }], { width: 80 });
+	assert.match(ascii, /✗ settings\.json plain ascii detail that is short/);
+});
+
+test("scrubCredentials masks a bare token, which has no userinfo to find", () => {
+	// An error message that quotes a key — "load failed for provider openai with
+	// apiKey sk-…" — reached the report verbatim: the rules only knew userinfo and
+	// query strings, and a bare token has neither.
+	const key = "sk-0000000000000000000000000000000000000000000000000000000000000000";
+	for (const text of [
+		`apiKey ${key}`,
+		`apiKey: ${key}`,
+		`failed with ${key}`,
+		`Authorization: Bearer ${key}`,
+		"ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+		"npm_notarealtoken0000000000",
+		"AKIAIOSFODNN7EXAMPLE",
+		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+	]) {
+		assert.doesNotMatch(scrubCredentials(text), /sk-0000|ghp_abc|npm_notareal|AKIAIOS|eyJhbGci/, `not masked: ${text}`);
+	}
+	// Legitimate report text survives: a package spec, a path, a version.
+	for (const text of ["npm:pi-lens@0.9.1", "https://host/v1/models", "installed 0.9.1", "no $VAR reference in models.json credentials"]) {
+		assert.equal(scrubCredentials(text), text);
+	}
+});
+
+test("redactUrl does not republish a credential that sits in the path", () => {
+	// A gateway that takes its key in the path is unusual but real, and the one
+	// function whose job is to keep credentials out printed it back.
+	const key = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+	assert.doesNotMatch(redactUrl(`https://host/${key}/v1`), /ghp_abc/);
+	assert.doesNotMatch(redactUrl(`https://user:pw@host/${key}/v1`), /ghp_abc/);
+	// An ordinary path is untouched.
+	assert.equal(redactUrl("https://host/v1/models"), "https://host/v1/models");
+});

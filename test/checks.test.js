@@ -1590,7 +1590,8 @@ test("network: offline mode still names a baseUrl that is not a URL", async () =
 
 test("network: a rejected header value is not quoted back", async () => {
 	// undici's message embeds the value it rejected — and here that value is the
-	// apiKey. scrubCredentials cannot see a bare key, so the row must not use it.
+	// apiKey. scrubCredentials now masks bare tokens too, but the row must still
+	// not echo the message: the value is only known to be a key in this branch.
 	const root = tmpRoot();
 	writeJson(path.join(root, "settings.json"), { packages: [] });
 	writeJson(path.join(root, "models.json"), {
@@ -1940,6 +1941,38 @@ test("config: the stale-backup hint names what is actually stale", async () => {
 		assert.doesNotMatch(rows.backups.hint, /both backups/);
 		assert.match(rows.backups.hint, /newest backup of settings\.json predates the current file, /);
 		assert.doesNotMatch(rows.backups.hint, /models\.json predates/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("packages: a manifest that parses to a non-object is a failure, not 'readable'", async () => {
+	// `null`, `"nope"` and `[]` are valid JSON, so the row counted them as
+	// readable and put a green tick on a package that cannot load — next to an
+	// `entry files` row that skipped because the manifest declared nothing.
+	for (const body of ["null", '"nope"', "[]", "5"]) {
+		const root = tmpRoot();
+		const dir = path.join(root, "npm", "node_modules", "p");
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(path.join(dir, "package.json"), body);
+		writeJson(path.join(root, "settings.json"), { packages: ["npm:p"] });
+		try {
+			const rows = byId(await packages.run(buildContext({ agentDir: root })));
+			assert.equal(rows.manifests.status, "fail", `body ${body}: ${rows.manifests.detail}`);
+			assert.match(rows.manifests.detail, /not a JSON object/);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}
+	// An empty object is still a valid (if useless) manifest.
+	const root = tmpRoot();
+	const dir = path.join(root, "npm", "node_modules", "p");
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, "package.json"), "{}");
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:p"] });
+	try {
+		const rows = byId(await packages.run(buildContext({ agentDir: root })));
+		assert.equal(rows.manifests.status, "ok");
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
