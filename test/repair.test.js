@@ -440,3 +440,73 @@ test("a repair failure message is scrubbed like every other error path", async (
 	assert.equal(applied[0].ok, false);
 	assert.doesNotMatch(JSON.stringify(applied), /ghp_sekrit/);
 });
+
+test("one run takes one backup per file, holding the state before the run", async () => {
+	// Prune and dedupe both rewrite settings.json, and each used to write its own
+	// backup milliseconds apart. The newest backup — the one `restore` picks — then
+	// held the intermediate state, so undoing a broken config handed back a
+	// half-repaired file instead of the one the user had before checkup ran.
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(file, `${JSON.stringify({ packages: ["npm:a", "npm:a", "npm:gone"] }, null, 2)}\n`);
+	const aDir = path.join(dir, "npm", "node_modules", "a");
+	fs.mkdirSync(aDir, { recursive: true });
+	fs.writeFileSync(path.join(aDir, "package.json"), '{"name":"a"}');
+
+	try {
+		const applied = await applyRepairs(
+			[
+				{ title: "p", fix: "prune-missing-packages", fixTarget: file },
+				{ title: "d", fix: "dedupe-packages", fixTarget: file },
+			],
+			{ agentDir: dir },
+		);
+		assert.equal(applied.filter((r) => r.ok).length, 2, JSON.stringify(applied));
+		const backups = fs.readdirSync(dir).filter((n) => n.startsWith("settings.json.checkup-bak-"));
+		assert.equal(backups.length, 1, backups.join(", "));
+		// The one backup is the pre-run file: three entries, duplicate included.
+		const kept = JSON.parse(fs.readFileSync(path.join(dir, backups[0]), "utf8"));
+		assert.deepEqual(kept.packages, ["npm:a", "npm:a", "npm:gone"]);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("restore falls back to an older backup when the newest one does not parse", () => {
+	// A corrupt newest backup is exactly the situation restore exists for — a
+	// copy taken while the file was already damaged — and taking only the newest
+	// meant the valid one sitting next to it was never tried.
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	const older = path.join(dir, "settings.json.checkup-bak-2026-01-01T00-00-00-000");
+	const newer = path.join(dir, "settings.json.checkup-bak-2026-06-01T00-00-00-000");
+	fs.writeFileSync(older, '{"packages":["npm:kept"]}\n');
+	fs.writeFileSync(newer, "{ corrupt");
+	fs.writeFileSync(file, "{ current broken");
+	try {
+		const res = applyRestoreConfig(file);
+		assert.equal(res.ok, true, res.message);
+		assert.match(res.message, /2026-01-01T00-00-00-000/);
+		assert.match(res.message, /skipped 1 newer backup/);
+		assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).packages[0], "npm:kept");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("restore names every backup it rejected when none of them parse", () => {
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	fs.writeFileSync(path.join(dir, "settings.json.checkup-bak-a"), "{ one");
+	fs.writeFileSync(path.join(dir, "settings.json.checkup-bak-b"), "{ two");
+	fs.writeFileSync(file, "{ current broken");
+	try {
+		const res = applyRestoreConfig(file);
+		assert.equal(res.ok, false);
+		assert.match(res.message, /nothing to restore from/);
+		assert.match(res.message, /checkup-bak-a/);
+		assert.match(res.message, /checkup-bak-b/);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});

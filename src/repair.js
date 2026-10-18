@@ -6,7 +6,7 @@
 // and none of them deletes a package or disables an extension.
 import fs from "node:fs";
 import path from "node:path";
-import { isMissing, newestBackup, readJson, redactSource, resolvePackageDir, scrubCredentials, sourceOf } from "./util.js";
+import { backupsNewestFirst, isMissing, readJson, redactSource, resolvePackageDir, scrubCredentials, sourceOf } from "./util.js";
 
 function stamp() {
 	// Milliseconds are kept: two repairs in the same second would otherwise
@@ -33,6 +33,26 @@ function copyBackup(target, label = "checkup-bak") {
 		}
 	}
 	throw new Error(`could not find a free backup name for ${path.basename(target)}`);
+}
+
+/**
+ * The backup for `target` in this run, made once and reused.
+ *
+ * Two repairs can hit the same file: a prune and a dedupe both rewrite
+ * `settings.json`, and each used to write its own backup a few milliseconds
+ * apart. That left the newest backup holding the *intermediate* state — after
+ * the prune, before the dedupe — and `restore` picks the newest backup, so
+ * undoing a broken config handed back a half-repaired file instead of the one
+ * the user had before checkup touched it. One backup per file per run keeps
+ * "the backup" meaning "before this run".
+ */
+function backupFor(target, backups) {
+	if (!backups) return copyBackup(target);
+	const existing = backups.get(target);
+	if (existing) return existing;
+	const made = copyBackup(target);
+	backups.set(target, made);
+	return made;
 }
 
 /** Flush a directory entry so a rename survives a power loss. Best effort. */
@@ -157,12 +177,28 @@ export function applyRestoreConfig(target) {
 	// it would undo the fix.
 	const current = readJson(target);
 	if (current.ok) return { ok: false, message: `${path.basename(target)} is valid JSON again — nothing to restore` };
-	const backup = newestBackup(target);
-	if (!backup) return { ok: false, message: `no backup found for ${path.basename(target)}` };
-	const parsed = readJson(backup);
-	// `!ok` covers oversized and unreadable too, and telling the user a valid
-	// 5 MB backup "is not valid JSON" is the same false claim the checks avoid.
-	if (!parsed.ok) return { ok: false, message: `nothing to restore from: ${unreadable(backup, parsed).message}` };
+	const candidates = backupsNewestFirst(target);
+	if (!candidates.length) return { ok: false, message: `no backup found for ${path.basename(target)}` };
+	// Newest first, and the first one that parses wins. Taking only the newest
+	// meant a corrupt newest backup — a copy taken while the file was already
+	// damaged — blocked the valid one sitting next to it, which is the exact
+	// situation restore exists for.
+	let backup = null;
+	const rejected = [];
+	for (const candidate of candidates) {
+		const parsed = readJson(candidate);
+		if (parsed.ok) {
+			backup = candidate;
+			break;
+		}
+		// `!ok` covers oversized and unreadable too, and telling the user a valid
+		// 5 MB backup "is not valid JSON" is the same false claim the checks avoid.
+		rejected.push(unreadable(candidate, parsed).message);
+	}
+	if (!backup) {
+		return { ok: false, message: `nothing to restore from: ${rejected.join("; ")}` };
+	}
+	const skipped = candidates.indexOf(backup);
 	const aside = copyBackup(target, "broken");
 	// The backup is valid JSON (checked above), so restoring its bytes verbatim
 	// keeps any formatting the user had. If the write itself fails after the
@@ -183,7 +219,7 @@ export function applyRestoreConfig(target) {
 	return {
 		ok: true,
 		changed: true,
-		message: `restored ${path.basename(target)} from ${path.basename(backup)} (broken copy kept as ${path.basename(aside)})`,
+		message: `restored ${path.basename(target)} from ${path.basename(backup)}${skipped ? ` (skipped ${skipped} newer backup(s) that do not parse)` : ""} (broken copy kept as ${path.basename(aside)})`,
 	};
 }
 
@@ -196,7 +232,7 @@ export function applyRestoreConfig(target) {
  * the second one silently changed what Pi loads. The backup would have made it
  * recoverable, but a repair that needs its backup is not a repair.
  */
-export function applyDedupePackages(target) {
+export function applyDedupePackages(target, options = {}) {
 	const settings = readJson(target);
 	if (!settings.ok) return unreadable(target, settings);
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to dedupe" };
@@ -213,7 +249,7 @@ export function applyDedupePackages(target) {
 	// between — a second read would prove nothing. Backing up before the plan was
 	// known left a stray `.checkup-bak-*` beside a healthy config on runs that
 	// repaired nothing.
-	const backup = copyBackup(target);
+	const backup = backupFor(target, options.backups);
 	settings.data.packages = plan.kept;
 	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
@@ -258,7 +294,7 @@ function dedupePlan(packages) {
  * `dirname(target)` would resolve every entry under the wrong root if this were
  * ever pointed at a project-level settings file.
  */
-export function applyPruneMissingPackages(target, root) {
+export function applyPruneMissingPackages(target, root, options = {}) {
 	// Not defaulted: a wrong root makes every entry look missing, and this repair
 	// deletes what it cannot resolve.
 	if (!root) throw new Error("applyPruneMissingPackages needs the agent directory to resolve packages against");
@@ -288,7 +324,7 @@ export function applyPruneMissingPackages(target, root) {
 
 	// Same reasoning as dedupe: the read above is post-prompt, and the rest of
 	// this function is synchronous.
-	const backup = copyBackup(target);
+	const backup = backupFor(target, options.backups);
 	settings.data.packages = plan.kept;
 	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
 	return {
@@ -328,8 +364,8 @@ function prunePlan(packages, root) {
 /** Named repairs, keyed by the `fix` field a check emits. */
 const REPAIRS = {
 	"restore-config": (target) => applyRestoreConfig(target),
-	"dedupe-packages": (target) => applyDedupePackages(target),
-	"prune-missing-packages": applyPruneMissingPackages,
+	"dedupe-packages": (target, ctx) => applyDedupePackages(target, ctx),
+	"prune-missing-packages": (target, ctx) => applyPruneMissingPackages(target, ctx?.agentDir, ctx),
 };
 
 
@@ -344,6 +380,9 @@ const REPAIRS = {
 export async function applyRepairs(findings, { agentDir } = {}) {
 	const applied = [];
 	const seen = new Set();
+	// Shared across every repair in this run: one backup per file, taken before
+	// the first write to it, so `restore` undoes the run rather than its last step.
+	const ctx = { agentDir, backups: new Map() };
 	for (const finding of findings) {
 		const key = `${finding.fix}:${finding.fixTarget}`;
 		if (seen.has(key)) continue;
@@ -355,7 +394,7 @@ export async function applyRepairs(findings, { agentDir } = {}) {
 			continue;
 		}
 		try {
-			applied.push(repair(finding.fixTarget, agentDir));
+			applied.push(repair(finding.fixTarget, ctx));
 		} catch (e) {
 			// Scrubbed like every other error path: fs errors embed absolute paths and
 			// the prune guard's throw can quote a package source, which may carry a

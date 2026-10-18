@@ -285,16 +285,27 @@ export function normalizePath(p) {
  * two naming schemes do not sort chronologically against each other.
  */
 export function newestBackup(file) {
+	return backupsNewestFirst(file)[0] ?? null;
+}
+
+/**
+ * Every backup of `file`, newest first.
+ *
+ * `restore` used to take only the newest one and give up when it did not parse,
+ * which failed the one case recovery exists for: the newest backup was corrupt
+ * — a copy taken while the file was already damaged — and a valid older one sat
+ * right next to it. Callers walk this list and stop at the first that parses.
+ */
+export function backupsNewestFirst(file) {
 	const dir = path.dirname(file);
 	const base = path.basename(file);
 	let entries;
 	try {
 		entries = fs.readdirSync(dir);
 	} catch {
-		return null;
+		return [];
 	}
-	let best = null;
-	let bestTime = Number.NEGATIVE_INFINITY;
+	const found = [];
 	for (const entry of entries) {
 		if (entry === base || !entry.startsWith(base)) continue;
 		// Anchored: the marker has to start right after `settings.json`. Unanchored,
@@ -308,14 +319,12 @@ export function newestBackup(file) {
 		} catch {
 			continue; // dangling symlink or raced deletion
 		}
-		// A bulk copy can give several backups the same mtime; break the tie on
-		// the name so repeated runs always pick the same file.
-		if (mtimeMs > bestTime || (mtimeMs === bestTime && best !== null && full > best)) {
-			best = full;
-			bestTime = mtimeMs;
-		}
+		found.push({ file: full, mtimeMs });
 	}
-	return best;
+	// A bulk copy can give several backups the same mtime; break the tie on the
+	// name so repeated runs always see the same order.
+	found.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.file < b.file ? 1 : a.file > b.file ? -1 : 0));
+	return found.map((entry) => entry.file);
 }
 
 /**

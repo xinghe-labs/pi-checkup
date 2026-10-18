@@ -199,7 +199,7 @@ The groups above are the ones that appear in a report, in that order. Independen
 
 Only reversible repairs are automated, and inside a session it normally offers only the first:
 
-1. **Restore a config file** that is no longer valid JSON, from its newest sibling backup. The broken copy is kept.
+1. **Restore a config file** that is no longer valid JSON, from its newest sibling backup that still parses — a corrupt newest backup does not block the valid one beside it, and the message says how many newer ones were skipped. The broken copy is kept.
 
 2. **Collapse duplicate `packages` entries** in `settings.json`. Only byte-identical repeats are dropped: `"npm:a"` next to `{"source": "npm:a", "enabled": false}` carries different intent and is left alone.
 3. **Prune `packages` entries whose directory is gone** — the ones a reinstall did not bring back. Sources resolved by Pi itself (`git:`, `https:`) are never touched, and a prune that would leave the list empty is refused and never even offered: that pattern means the agent directory is wrong, not that every package vanished.
@@ -210,7 +210,7 @@ Repairs 2 and 3 rewrite `settings.json`, so they need a settings file checkup ac
 npx pi-checkup --fix --yes
 ```
 
-Every write is preceded by a timestamped backup, and neither path writes on its own: `/checkup fix` asks in the TUI, and the CLI refuses to write unless you pass `--yes`. Anything that would delete a package, disable an extension, or edit your shell environment is reported with a suggestion and left alone — a diagnostic tool should not be able to break your setup in the process of describing it.
+Every write is preceded by a timestamped backup — one per file per run, taken before the first write, so `restore` hands back the file as it was before checkup ran rather than a half-repaired intermediate — and neither path writes on its own: `/checkup fix` asks in the TUI, and the CLI refuses to write unless you pass `--yes`. Anything that would delete a package, disable an extension, or edit your shell environment is reported with a suggestion and left alone — a diagnostic tool should not be able to break your setup in the process of describing it.
 
 A repair that rewrites `settings.json` re-serialises it with two-space indentation, so expect a larger diff than the change itself. Nothing is repaired unless a check found something wrong, so a healthy install writes nothing at all.
 
