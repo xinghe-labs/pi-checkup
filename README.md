@@ -77,9 +77,10 @@ Packages
 Binaries
   ✓ dangling links     19 links all resolve
   · shadowed names     no package command resolved on PATH
-  ! unreachable bins   6 package command(s) not on PATH: pi-web-access-mcp,
-                       pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp,
-                       pi-lens-analyze
+  · unreachable bins   6 package command(s) live in
+                       /root/.pi/agent/npm/node_modules/.bin, which is not on
+                       PATH: pi-web-access-mcp, pi-subagents, pi-mcp-adapter,
+                       pi-lens, pi-lens-mcp, pi-lens-analyze
 Network
   ✓ providers          2 endpoint(s) reachable
   ✓ dns                1 provider host(s) resolve normally
@@ -94,20 +95,20 @@ Config
 Runtime
   ✓ node               v22.23.3
   ✓ pi launcher        /root/.pi/agent/bin/pi
-  ✓ disk               6% used on /, 950.7 GB free
+  ✓ disk               6% used on /, 950.4 GB free
   ✓ proxy              http://127.0.0.1:10808 accepting connections
 
-19 checks: 14 ok, 1 warning, 0 failed, 4 skipped
+19 checks: 14 ok, 0 warnings, 0 failed, 5 skipped
 Run `npx pi-checkup --verbose` to show what to do about each finding.
 
-! 1 warning, 4 skipped  ·  run /checkup inside Pi for registry checks
+✓ 14 ok, 5 skipped  ·  run /checkup inside Pi for registry checks
 ```
 
 Both captures below and above come from a real machine, taken with pi-checkup 0.1.0; free space, Node versions and which packages are installed are properties of that machine, not of the tool, and the row counts grow when checks are added.
 
 ## Real output
 
-This is an actual run on a working install, copied out of the TUI at 80 columns — not a mock-up. The two `Network` rows describe the moment it ran; everything else is a property of the install. 20 of 24 checks pass, three are skipped because there is genuinely nothing to look at, and the one warning is the expected state on this machine — the package commands are installed but their directory is not on `PATH`, which the hint explains and `PI_CHECKUP_IGNORE=unreachable` silences.
+This is an actual run on a working install, copied out of the TUI at 80 columns — not a mock-up. The two `Network` rows describe the moment it ran; everything else is a property of the install. 20 of 24 checks pass and the other four are skipped because there is genuinely nothing to look at: no live registry to audit, no project-level settings, no `$VAR` credentials, and no package command on `PATH` to compare. Nothing warns, which is the point — the package commands live in a `.bin` directory Pi never adds to `PATH`, that is Pi's own layout rather than a fault, and the row says so instead of putting a permanent amber mark on a healthy install.
 
 ```text
 Registry
@@ -126,9 +127,10 @@ Packages
 Binaries
   ✓ dangling links     19 links all resolve
   · shadowed names     no package command resolved on PATH
-  ! unreachable bins   6 package command(s) not on PATH: pi-web-access-mcp,
-                       pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp,
-                       pi-lens-analyze
+  · unreachable bins   6 package command(s) live in
+                       /root/.pi/agent/npm/node_modules/.bin, which is not on
+                       PATH: pi-web-access-mcp, pi-subagents, pi-mcp-adapter,
+                       pi-lens, pi-lens-mcp, pi-lens-analyze
 Network
   ✓ providers          2 endpoint(s) reachable
   ✓ dns                1 provider host(s) resolve normally
@@ -143,10 +145,10 @@ Config
 Runtime
   ✓ node               v22.23.3
   ✓ pi launcher        /root/.pi/agent/bin/pi
-  ✓ disk               6% used on /, 950.7 GB free
+  ✓ disk               6% used on /, 950.4 GB free
   ✓ proxy              http://127.0.0.1:10808 accepting connections
 
-24 checks: 20 ok, 1 warning, 0 failed, 3 skipped
+24 checks: 20 ok, 0 warnings, 0 failed, 4 skipped
 Run `/checkup verbose` to show what to do about each finding.
 ```
 
@@ -179,7 +181,7 @@ The `attribution` row is the part no other tool gives you: which package owns wh
 | | Install leftovers | `.<name>-<random>` staging links in `.bin`: an install is running right now, or was interrupted. Its own finding, not a broken package |
 | | Missing shims | The package declares a `bin` but npm never linked it into `.bin` — usually an install run with `--ignore-scripts` |
 | | Shadowed names | A package's command name resolves to an unrelated program earlier on `PATH`. Skipped when no declared command resolved at all: there is nothing to compare, and a green tick there would sit next to a row saying the commands are missing |
-| | Unreachable bins | A package ships a CLI you cannot invoke by name |
+| | Unreachable bins | A package ships a CLI that is not reachable by name. A `skip` when `.bin` itself is not on `PATH` — that is Pi's own layout and Pi calls these by full path — and a warning only when the directory *is* on `PATH` and the command still did not resolve, which points at PATH order or an unreadable link |
 | **Network** | Endpoint reachability | Probes `<baseUrl>/models` for every provider. `401`/`403` counts as alive — this never validates your key and never spends tokens. An endpoint that answers with something other than life — a refused connection, a rejected certificate, an HTTP error — is a failure, and fails the run; only a probe that was cut off locally by its own timeout stays a warning, because the deadline is this process's, not the endpoint's |
 | | Cleartext auth | A provider on `http://` to another machine with a credential configured — an `apiKey`, a password embedded in the `baseUrl`, a credential-named header value, or a query string, which cannot be inspected for secrets. The `apiKey` and `baseUrl` credentials are withheld from the probe; a query string is never sent, so that endpoint is reported unprobed. Loopback hosts are exempt |
 | | baseUrl shape | A `baseUrl` that is not a string or an object. A string that is not a URL — including the `localhost:11434/v1` paste with no scheme — is reported as an unhealthy provider, and also named in this row, because the endpoint is what would have to be probed |
@@ -214,18 +216,17 @@ A repair that rewrites `settings.json` re-serialises it with two-space indentati
 
 ## Ignoring a finding you have decided to live with
 
-Some warnings are correct and permanent: a launcher you deliberately keep off `PATH`, an event-only package that registers no tool. A health check you have learned to ignore is worse than no health check, so rows can be suppressed by name.
+Some findings are correct and permanent: a gateway you deliberately reach over plain `http` on your own network, a package installed with `--ignore-scripts` whose links you do not want. A health check you have learned to ignore is worse than no health check, so rows can be suppressed by name.
 
 ```bash
-PI_CHECKUP_IGNORE=unreachable,Config:env npx pi-checkup
+PI_CHECKUP_IGNORE=Network:cleartext npx pi-checkup
 ```
 
-Each entry matches a row's `id`, its `Group:id` form, or its title. A suppressed row is downgraded to `skip`, keeps its original detail, and says what it replaced:
+Each entry matches a row's `id`, its `Group:id` form, or its title. A suppressed row is downgraded to `skip`, keeps its original detail, and says what it replaced — here from a scratch install with one provider deliberately configured over plain `http`:
 
 ```text
-  · unreachable bins   ignored via PI_CHECKUP_IGNORE (would be warn): 6 package
-                       command(s) not on PATH: pi-web-access-mcp, pi-subagents,
-                       pi-mcp-adapter, pi-lens, pi-lens-mcp, pi-lens-analyze
+  · cleartext auth     ignored via PI_CHECKUP_IGNORE (would be warn): gw use
+                       http:// with credentials configured
 ```
 
 Suppression is never silent, and it drops the row's repair offer so a hidden finding cannot be fixed behind your back. It applies to failures too: a suppressed `fail` no longer affects the exit code, which is the point of the variable — use it for a state you have decided to accept, not to turn a red build green. Export it from your shell profile if you want it to apply inside Pi too.
@@ -239,9 +240,9 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
   "summary": {
     "total": 24,
     "ok": 20,
-    "warn": 1,
+    "warn": 0,
     "fail": 0,
-    "skip": 3
+    "skip": 4
   },
   "version": "0.1.0",
   "node": "22.23.3",
@@ -251,9 +252,9 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
       "group": "Binaries",
       "id": "unreachable",
       "title": "unreachable bins",
-      "status": "warn",
-      "detail": "6 package command(s) not on PATH: pi-web-access-mcp, pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp, pi-lens-analyze",
-      "hint": "Pi installs package commands into /root/.pi/agent/npm/node_modules/.bin without adding it to PATH. Extensions that call them by full path still work; to use them by name, add that directory to PATH or run them with npx. If this is the state you want, silence the row with PI_CHECKUP_IGNORE=unreachable."
+      "status": "skip",
+      "detail": "6 package command(s) live in /root/.pi/agent/npm/node_modules/.bin, which is not on PATH: pi-web-access-mcp, pi-subagents, pi-mcp-adapter, pi-lens, pi-lens-mcp, pi-lens-analyze",
+      "hint": "Pi calls these by full path, so an extension that uses them still works. Add /root/.pi/agent/npm/node_modules/.bin to PATH only if you want to run them by name."
     },
     {
       "group": "Config",
@@ -268,7 +269,7 @@ Suppression is never silent, and it drops the row's repair offer so a hidden fin
 
 The `checks` array always has one entry per row of the text report, in the same order. The excerpt above omits the other 22 entries; real output is printed by `JSON.stringify(payload, null, 2)`.
 
-Exit-worthy statuses are `fail`; `warn` means something needs attention without by itself failing the run — a package command that is not on `PATH`, or an `apiKey` that no HTTP request can carry. Repair metadata is stripped from the JSON payload.
+Exit-worthy statuses are `fail`; `warn` means something needs attention without by itself failing the run — an `apiKey` that no HTTP request can carry, or a credential on a plain-`http` endpoint. Repair metadata is stripped from the JSON payload.
 
 ## Design principles
 

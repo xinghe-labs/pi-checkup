@@ -12,6 +12,7 @@ import {
 	exists,
 	isMissing,
 	isWindows,
+	normalizePath,
 	readJson,
 	resolvePackageDir,
 	sameCommand,
@@ -334,20 +335,35 @@ export async function run({ settings, settingsLoaded = true, agentDir: root, bin
 	);
 
 	if (unreachable.length) {
+		// Is the .bin directory itself on PATH? Pi's default install does not add
+		// it, and Pi resolves package binaries by full path — so "unreachable"
+		// there is the layout, not a fault. Reporting it as a warning put a
+		// permanent amber row on every healthy install and taught the reader to
+		// skip the group that is supposed to mean something. It stays a warning
+		// only where the directory *is* on PATH and the command still did not
+		// resolve, which points at PATH order or an unreadable shim.
+		const wanted = normalizePath(binDir);
+		const binDirOnPath =
+			Boolean(wanted) &&
+			String(env.PATH ?? env.Path ?? env.path ?? "")
+				.split(path.delimiter)
+				.filter(Boolean)
+				.some((dir) => normalizePath(dir) === wanted);
+		const listed = names(unreachable, 6);
 		results.push({
 			group,
 			id: "unreachable",
 			title: "unreachable bins",
-			status: "warn",
-			detail: `${unreachable.length} package command(s) not on PATH: ${names(unreachable, 6)}`,
-			// The file exists — it is just not on PATH — so the fix is the directory,
-			// not a reinstall. Without this the row reads as "something is broken"
-			// with no way to tell what to do about it.
-			// The file exists — it is just not on PATH — so the fix is the directory,
-			// not a reinstall. Without this the row reads as "something is broken"
-			// with no way to tell what to do about it. The suppression is named here
-			// because this is the one row a healthy install carries for good.
-			hint: `Pi installs package commands into ${binDir} without adding it to PATH. Extensions that call them by full path still work; to use them by name, add that directory to PATH or run them with npx. If this is the state you want, silence the row with PI_CHECKUP_IGNORE=unreachable.`,
+			status: binDirOnPath ? "warn" : "skip",
+			detail: binDirOnPath
+				? `${unreachable.length} package command(s) did not resolve even though ${binDir} is on PATH: ${listed}`
+				: `${unreachable.length} package command(s) live in ${binDir}, which is not on PATH: ${listed}`,
+			// The file exists — it is just not reachable — so the fix is the
+			// directory, not a reinstall. Without this the row reads as "something is
+			// broken" with no way to tell what to do about it.
+			hint: binDirOnPath
+				? "The directory is on PATH, so a different program answers first or the link cannot be read. Check the order of PATH entries and the link's permissions."
+				: `Pi calls these by full path, so an extension that uses them still works. Add ${binDir} to PATH only if you want to run them by name.`,
 		});
 	}
 

@@ -155,9 +155,12 @@ export async function run({
 					: `${backedUp} file(s) backed up`,
 				{
 					// The named path is the point: "copy it somewhere safe" with no `it` left
-					// the reader to work out which file the paragraph was about.
+					// the reader to work out which file the paragraph was about. The count of
+					// backups is not claimed: "both backups are older" was hardcoded and
+					// wrong as soon as one file was stale and the other was not — and a
+					// file may have any number of backups.
 					hint: stale.length
-						? `The current ${stale.join(" and ")} cannot be rolled back to, because both backups are older. Copy ${stale
+						? `The newest backup of ${stale.join(" and ")} predates the current file${stale.length > 1 ? "s" : ""}, so restoring it would discard the edits made since. Copy ${stale
 								.map((label) => files.find((f) => f.label === label)?.file ?? label)
 								.join(" and ")} somewhere you can restore from before the next edit.`
 						: undefined,

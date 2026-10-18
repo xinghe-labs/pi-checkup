@@ -416,7 +416,7 @@ test("writeAtomic refuses to rename a truncated temp file over the target", () =
 	// repairable fault into a corrupt config, so the byte count is verified.
 	// Simulated by shrinking what fstatSync reports — the one seam the guard reads.
 	const realFstat = fs.fstatSync;
-	fs.fstatSync = function (fd, ...args) {
+	fs.fstatSync = (fd, ...args) => {
 		const st = realFstat.call(fs, fd, ...args);
 		return { ...st, size: Math.max(0, st.size - 5) };
 	};

@@ -1895,3 +1895,52 @@ test("network: a non-object providers value is named, not silently dropped", asy
 	assert.doesNotMatch(detail, /no provider with a baseUrl/);
 	fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("binaries: a .bin directory off PATH is skipped, not warned", async () => {
+	// Pi never adds .bin to PATH and calls package commands by full path, so the
+	// old permanent warning put an amber row on every healthy install and taught
+	// the reader to skip the group that is supposed to mean something.
+	const root = tmpRoot();
+	const binDir = path.join(root, "npm", "node_modules", ".bin");
+	fs.mkdirSync(binDir, { recursive: true });
+	const shim = path.join(binDir, "checkup-tool");
+	fs.writeFileSync(shim, "#!/bin/sh\n");
+	fs.chmodSync(shim, 0o755);
+	installPkg(root, "owner", { bin: { "checkup-tool": "./cli.js" }, pi: { extensions: ["./i.js"] } });
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:owner"] });
+	try {
+		const env = { ...process.env, PATH: path.join(root, "not-on-path") };
+		const rows = byId(await binaries.run(buildContext({ agentDir: root, env })));
+		assert.equal(rows.unreachable.status, "skip", rows.unreachable.detail);
+		assert.match(rows.unreachable.detail, /which is not on PATH/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("config: the stale-backup hint names what is actually stale", async () => {
+	// "because both backups are older" was hardcoded. It was wrong as soon as one
+	// file was stale and the other was not, and a file may have any number of
+	// backups — so the count is no longer claimed at all.
+	const root = tmpRoot();
+	const old = new Date(Date.now() - 86400000);
+	const fresh = new Date();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: {} });
+	// settings.json was edited after its backup; models.json was not.
+	fs.utimesSync(path.join(root, "settings.json"), fresh, fresh);
+	fs.writeFileSync(path.join(root, "settings.json.bak"), "{}");
+	fs.utimesSync(path.join(root, "settings.json.bak"), old, old);
+	fs.utimesSync(path.join(root, "models.json"), old, old);
+	fs.writeFileSync(path.join(root, "models.json.bak"), "{}");
+	fs.utimesSync(path.join(root, "models.json.bak"), fresh, fresh);
+	try {
+		const rows = byId(await config.run(buildContext({ agentDir: root })));
+		assert.equal(rows.backups.status, "ok");
+		assert.doesNotMatch(rows.backups.hint, /both backups/);
+		assert.match(rows.backups.hint, /newest backup of settings\.json predates the current file, /);
+		assert.doesNotMatch(rows.backups.hint, /models\.json predates/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
