@@ -629,3 +629,21 @@ test("redactUrl does not republish a credential that sits in the path", () => {
 	// An ordinary path is untouched.
 	assert.equal(redactUrl("https://host/v1/models"), "https://host/v1/models");
 });
+
+test("renderReport wraps its own summary and footer, not just the rows", () => {
+	// The summary is the longest single sentence in a short report — "19 checks:
+	// 11 ok, 0 warnings, 0 failed, 8 skipped" is 51 columns — and the footer is 63.
+	// Both were pushed as one line, so a narrow terminal or a split pane overflowed
+	// the width every other line respected.
+	const rows = [{ group: "Config", id: "x", title: "settings.json", status: "ok", detail: "valid JSON", hint: "something to do" }];
+	for (const width of [30, 40, 50, 60, 80]) {
+		const out = renderReport(rows, { width });
+		for (const line of out.split("\n")) {
+			assert.ok(line.length <= width, `width ${width}: ${line.length} cols — ${JSON.stringify(line)}`);
+		}
+	}
+	// At 80 the lines still fit, so the captured blocks in the README are unchanged.
+	const wide = renderReport(rows, { width: 80 });
+	assert.match(wide, /\n1 checks: 1 ok, 0 warnings, 0 failed\n/);
+	assert.match(wide, /\nRun `\/checkup verbose` to show what to do about each finding\.$/);
+});

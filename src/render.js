@@ -192,12 +192,20 @@ export function renderReport(results, { verbose = false, hintCommand = "/checkup
 	const s = summarize(results);
 	lines.push("");
 	const warnWord = s.warn === 1 ? "warning" : "warnings";
-	lines.push(`${s.total} checks: ${s.ok} ok, ${s.warn} ${warnWord}, ${s.fail} failed${s.skip ? `, ${s.skip} skipped` : ""}`);
+	// Wrapped like every other line: the summary is the longest single sentence in
+	// a short report — "19 checks: 11 ok, 0 warnings, 0 failed, 8 skipped" is 51
+	// columns — and leaving it unwrapped broke the width the rest of the report
+	// respects on a narrow terminal or a split pane.
+	for (const part of wrapText(`${s.total} checks: ${s.ok} ok, ${s.warn} ${warnWord}, ${s.fail} failed${s.skip ? `, ${s.skip} skipped` : ""}`, width, 0)) {
+		lines.push(part);
+	}
 	// Any hint, on any row. Tying this to non-ok rows meant a report whose only
 	// finding carried no hint never mentioned --verbose at all, so the user had
 	// no way to learn the flag exists.
 	if (!verbose && results.some((r) => r.hint)) {
-		lines.push(`Run \`${hintCommand}\` to show what to do about each finding.`);
+		for (const part of wrapText(`Run \`${hintCommand}\` to show what to do about each finding.`, width, 0)) {
+			lines.push(part);
+		}
 	}
 	return lines.join("\n");
 }
