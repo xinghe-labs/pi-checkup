@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="690" height="726" viewBox="0 0 690 726" role="img" aria-label="pi-checkup report">
+  <title>pi-checkup report</title>
+  <rect width="690" height="726" rx="10" fill="#10141a"/>
+  <rect width="690" height="38" rx="10" fill="#1b222c"/>
+  <rect y="28" width="690" height="10" fill="#1b222c"/>
+  <circle cx="22" cy="19" r="6" fill="#e06c75"/>
+  <circle cx="42" cy="19" r="6" fill="#e0b25c"/>
+  <circle cx="62" cy="19" r="6" fill="#4ec9a0"/>
+  <text x="345.0" y="24" fill="#5c6b7f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" text-anchor="middle">npx pi-checkup</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" xml:space="preserve">
+    <text x="22" y="58" fill="#7aa2f7" font-weight="600">Registry</text>
+    <text x="22" y="77" fill="#5c6b7f" font-weight="400">  · live registry      no Pi session — registry checks need a running process</text>
+    <text x="22" y="96" fill="#7aa2f7" font-weight="600">Packages</text>
+    <text x="22" y="115" fill="#4ec9a0" font-weight="400">  ✓ package dirs       15 present</text>
+    <text x="22" y="134" fill="#4ec9a0" font-weight="400">  ✓ manifests          15 readable</text>
+    <text x="22" y="153" fill="#4ec9a0" font-weight="400">  ✓ entry files        14 manifest(s) resolve</text>
+    <text x="22" y="172" fill="#7aa2f7" font-weight="600">Binaries</text>
+    <text x="22" y="191" fill="#4ec9a0" font-weight="400">  ✓ dangling links     19 links all resolve</text>
+    <text x="22" y="210" fill="#5c6b7f" font-weight="400">  · shadowed names     no package command resolved on PATH</text>
+    <text x="22" y="229" fill="#5c6b7f" font-weight="400">  · unreachable bins   6 package command(s) live in</text>
+    <text x="22" y="248" fill="#c8d3e0" font-weight="400">                       /root/.pi/agent/npm/node_modules/.bin, which is not on</text>
+    <text x="22" y="267" fill="#c8d3e0" font-weight="400">                       PATH: pi-web-access-mcp, pi-subagents, pi-mcp-adapter,</text>
+    <text x="22" y="286" fill="#c8d3e0" font-weight="400">                       pi-lens, pi-lens-mcp, pi-lens-analyze</text>
+    <text x="22" y="305" fill="#7aa2f7" font-weight="600">Network</text>
+    <text x="22" y="324" fill="#4ec9a0" font-weight="400">  ✓ providers          2 endpoint(s) reachable</text>
+    <text x="22" y="343" fill="#4ec9a0" font-weight="400">  ✓ dns                1 provider host(s) resolve normally</text>
+    <text x="22" y="362" fill="#7aa2f7" font-weight="600">Config</text>
+    <text x="22" y="381" fill="#4ec9a0" font-weight="400">  ✓ settings.json      valid JSON</text>
+    <text x="22" y="400" fill="#4ec9a0" font-weight="400">  ✓ models.json        valid JSON</text>
+    <text x="22" y="419" fill="#5c6b7f" font-weight="400">  · project settings   none</text>
+    <text x="22" y="438" fill="#4ec9a0" font-weight="400">  ✓ backups            2 file(s) backed up; edited since the newest backup:</text>
+    <text x="22" y="457" fill="#c8d3e0" font-weight="400">                       settings.json, models.json</text>
+    <text x="22" y="476" fill="#4ec9a0" font-weight="400">  ✓ duplicate packages none</text>
+    <text x="22" y="495" fill="#5c6b7f" font-weight="400">  · env references     no $VAR reference in models.json credentials</text>
+    <text x="22" y="514" fill="#7aa2f7" font-weight="600">Runtime</text>
+    <text x="22" y="533" fill="#4ec9a0" font-weight="400">  ✓ node               v22.23.3</text>
+    <text x="22" y="552" fill="#4ec9a0" font-weight="400">  ✓ pi launcher        /root/.pi/agent/bin/pi</text>
+    <text x="22" y="571" fill="#4ec9a0" font-weight="400">  ✓ disk               6% used on /, 950.3 GB free</text>
+    <text x="22" y="590" fill="#4ec9a0" font-weight="400">  ✓ proxy              http://127.0.0.1:10808 accepting connections</text>
+    <text x="22" y="628" fill="#7aa2f7" font-weight="600">19 checks: 14 ok, 0 warnings, 0 failed, 5 skipped</text>
+    <text x="22" y="647" fill="#7aa2f7" font-weight="600">Run `npx pi-checkup --verbose` to show what to do about each finding.</text>
+    <text x="22" y="685" fill="#4ec9a0" font-weight="400">✓ 14 ok, 5 skipped  ·  run /checkup inside Pi for registry checks</text>
+  </g>
+</svg>

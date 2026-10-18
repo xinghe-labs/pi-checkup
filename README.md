@@ -8,6 +8,8 @@
 
 **`pi list` tells you what you installed. `pi-checkup` tells you what actually works.**
 
+![pi-checkup report](./docs/demo.svg)
+
 A health-check extension for [Pi](https://pi.dev). It inspects the *running* session — not just your `settings.json` — and reports the failures that produce no error message anywhere: tools silently shadowed by another package, binaries that resolve to a completely different program, packages that are installed but registered nothing, endpoints that stopped answering.
 
 ## Install
@@ -310,6 +312,17 @@ cd pi-checkup
 npm run lint         # node --check over every source file
 node --test          # the whole suite; no Pi session needed
 ```
+
+Coverage, as of 0.1.2 (`node --test --experimental-test-coverage`):
+
+```text
+all files          95.76 % lines   86.66 % branches   95.96 % funcs
+```
+
+The one file well below that is `src/index.js` at 25.69 % — the in-session command handler.
+Covering it needs a live Pi process, and the parts that matter (the confirmation prompt, the repair
+call, the re-check) were driven end to end over the RPC extension-UI protocol by hand rather than
+in the suite. A green number there would be worth less than saying so.
 
 To try a local checkout without installing:
 
