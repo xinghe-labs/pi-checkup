@@ -2,7 +2,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import net from "node:net";
-import { bareHost, curlProbe, describeFsError, exists, humanBytes, isMissing, isWindows, proxyFromEnv, redactProxy, whichAll } from "../util.js";
+import { bareHost, curlProbe, describeFsError, humanBytes, isMissing, isWindows, proxyFromEnv, redactProxy, whichAll } from "../util.js";
 
 export const group = "Runtime";
 
@@ -127,7 +127,17 @@ export async function run({ offline = false, agentDir: root, env = process.env, 
 	// --- pi binary ---------------------------------------------------------
 	const piBin = path.join(root, "bin", isWindows ? "pi.cmd" : "pi");
 	const piBinAlt = path.join(root, "bin", "pi");
-	const found = [piBin, piBinAlt].find(exists);
+	// `isFile`, not `exists`: a directory named `bin/pi` satisfied the existence
+	// check and its 0755 mode satisfied the executable check, so the row showed a
+	// green tick over something that cannot launch anything.
+	const isFile = (p) => {
+		try {
+			return fs.statSync(p).isFile();
+		} catch {
+			return false;
+		}
+	};
+	const found = [piBin, piBinAlt].find(isFile);
 	let executable = false;
 	if (found && !isWindows) {
 		try {
@@ -144,7 +154,7 @@ export async function run({ offline = false, agentDir: root, env = process.env, 
 		// A pi installed by npm lives on PATH, not under the agent dir, so warning
 		// on the absence of ~/.pi/agent/bin/pi told those users their launcher was
 		// missing when `pi` was one PATH lookup away.
-		const onPath = whichAll("pi", env, { windows: isWindows }).find((c) => exists(c));
+		const onPath = whichAll("pi", env, { windows: isWindows }).find(isFile);
 		if (onPath) {
 			launcherStatus = "ok";
 			launcherDetail = `${onPath} (on PATH)`;

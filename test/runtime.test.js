@@ -145,3 +145,38 @@ test("a proxy value that is only a credential is not announced as 'configured (c
 	assert.doesNotMatch(proxy.detail, /sk-live/);
 	assert.match(proxy.detail, /value hidden/);
 });
+
+test("a directory named bin/pi is not reported as a working launcher", async () => {
+	// `exists()` is true for a directory, and a directory is usually 0755, so the
+	// executable check passed too: the row showed a green tick over something that
+	// cannot launch anything.
+	const dir = tmp();
+	fs.mkdirSync(path.join(dir, "bin", "pi"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "settings.json"), "{}");
+	try {
+		const rows = await runtime.run({ agentDir: dir, env: {} });
+		const launcher = rows.find((r) => r.id === "pi-bin");
+		assert.ok(launcher, JSON.stringify(rows));
+		assert.notEqual(launcher.status, "ok", launcher.detail);
+		assert.doesNotMatch(launcher.detail, new RegExp(`${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/bin/pi$`));
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a real launcher file at bin/pi is still reported as ok", async () => {
+	const dir = tmp();
+	fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+	const bin = path.join(dir, "bin", "pi");
+	fs.writeFileSync(bin, "#!/bin/sh\n");
+	fs.chmodSync(bin, 0o755);
+	fs.writeFileSync(path.join(dir, "settings.json"), "{}");
+	try {
+		const rows = await runtime.run({ agentDir: dir, env: {} });
+		const launcher = rows.find((r) => r.id === "pi-bin");
+		assert.equal(launcher.status, "ok");
+		assert.equal(launcher.detail, bin);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
