@@ -64,10 +64,12 @@ export function buildContext({ pi, cwd, offline = false, agentDir: rootOverride,
 		settingsSource,
 		hasRuntime,
 		// Whether the agent directory came from an explicit `PI_CODING_AGENT_DIR`
-		// rather than the default location. A directory that is missing answers two
-		// different questions depending on that: on a machine that never ran Pi it is
-		// simply the first use, but a path the user typed and got wrong is a problem
-		// with this run — and the two must not both report as a warning.
+		// rather than the default location. A missing directory answers two different
+		// questions depending on that: on a machine that never ran Pi it is simply the
+		// first use, but a path the user typed and got wrong is a problem with this
+		// run. Both stay `warn` — a directory Pi has not created yet is not damage —
+		// but the row names the variable and tells the reader to check it, instead of
+		// sending them to create a default location this run never used.
 		agentDirExplicit: Boolean(agentDirExplicit),
 		// Checks read the environment through the context, not from process.env, so
 		// a test can describe a proxy or an unset variable without touching the
