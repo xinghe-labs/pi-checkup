@@ -24,7 +24,7 @@
     ]
   },
   "bin": {
-    "pi-checkup": "./bin/checkup.js"
+    "pi-checkup": "bin/checkup.js"
   },
   "files": [
     "src/",
