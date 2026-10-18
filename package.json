@@ -1,6 +1,6 @@
 {
   "name": "pi-checkup",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Health checks for your Pi setup: tool/command conflicts, broken packages, shadowed binaries, dead endpoints.",
   "type": "module",
   "license": "MIT",
@@ -21,7 +21,8 @@
   "pi": {
     "extensions": [
       "./src/index.js"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/xinghe-labs/pi-checkup/main/docs/demo.svg"
   },
   "bin": {
     "pi-checkup": "bin/checkup.js"
@@ -30,6 +31,7 @@
     "src/",
     "bin/",
     "scripts/",
+    "docs/",
     "README.md",
     "LICENSE"
   ],
