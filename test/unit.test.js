@@ -280,15 +280,23 @@ test("redactUrl keeps the address and drops every credential", () => {
 test("curlProbe reports a setup failure instead of a dead endpoint", async () => {
 	// An unwritable temp dir makes the config file impossible to create. The
 	// request never leaves the machine, so nothing about the endpoint was learned.
-	const before = process.env.TMPDIR;
-	process.env.TMPDIR = path.join(os.tmpdir(), "checkup-no-such-dir", "nested");
+	// `os.tmpdir()` reads TMPDIR on POSIX and TEMP/TMP on Windows, so setting only
+	// TMPDIR left the Windows runner with a working temp dir and no failure to
+	// report.
+	const bad = path.join(os.tmpdir(), "checkup-no-such-dir", "nested");
+	const before = { TMPDIR: process.env.TMPDIR, TEMP: process.env.TEMP, TMP: process.env.TMP };
+	process.env.TMPDIR = bad;
+	process.env.TEMP = bad;
+	process.env.TMP = bad;
 	try {
 		const res = await curlProbe("http://127.0.0.1:9/v1/models");
 		assert.equal(res.setupFailed, true);
 		assert.equal(res.missing, false);
 	} finally {
-		if (before === undefined) delete process.env.TMPDIR;
-		else process.env.TMPDIR = before;
+		for (const [key, value] of Object.entries(before)) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
 	}
 });
 
@@ -552,4 +560,19 @@ test("network failures read as prose, without errno or undici internals", () => 
 	// An errno this file has never seen is still reported, and still translated out
 	// of Node's casing.
 	assert.equal(describeNetError(Object.assign(new Error("x"), { cause: { code: "EWEIRD" } })).text, "the request failed (EWEIRD)");
+});
+
+test("redactSource reads a Windows path instead of calling it unparsable", () => {
+	// The path branch only knew POSIX shapes, so every local source on Windows
+	// reached the report as "(unparsable value)" — the reader could not tell
+	// which file a package was missing. Pure string logic, so it is checked on
+	// every platform.
+	for (const path of ["D:\\ext\\single.js", "D:/ext/single.js", ".\\ext\\x.js", "..\\x.js", "dist\\*.js"]) {
+		assert.equal(redactSource(path), path);
+	}
+	// The credential shapes must still be hidden: a drive letter is one letter
+	// plus a separator, which no `user:pass@host` form satisfies.
+	for (const secret of ["alice:s3cr3t", "user:pass@host", "sk-ant-api03-abcdefghijklmnop"]) {
+		assert.equal(redactSource(secret), "(unparsable value)");
+	}
 });

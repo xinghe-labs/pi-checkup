@@ -63,7 +63,8 @@ test("the disk row names the volume the free space belongs to", async () => {
 	const rows = await runtime.run({ agentDir: tmp(), env: {} });
 	const disk = rows.find((r) => r.id === "disk");
 	if (disk.status === "skip") return; // an exotic filesystem; nothing to name
-	assert.match(disk.detail, /% used on \//);
+	// A Windows root is `C:\`, so accepting only `/` failed the whole job there.
+	assert.match(disk.detail, /% used on (\/|[a-z]:[\\/])/i);
 	assert.match(disk.detail, / free$/);
 });
 

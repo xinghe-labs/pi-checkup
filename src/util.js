@@ -426,10 +426,18 @@ export function globExists(dir, pattern) {
 	// package with `..`. `path.join(dir, "/abs/file.js")` silently re-roots the
 	// pattern under `dir`, so a file that resolves fine at load time was reported
 	// as a missing entry — a `fail` with a reinstall hint.
-	const base = path.isAbsolute(pattern) ? path.parse(pattern).root : dir;
-	if (!pattern.includes("*")) return exists(path.join(base, pattern));
+	const absolute = path.isAbsolute(pattern);
+	const root = absolute ? path.parse(pattern).root : "";
+	const base = absolute ? root : dir;
+	// An absolute pattern already names its root. Joining it back onto that root
+	// works on POSIX only by accident (`path.join("/", "/x")` collapses) and
+	// produced `D:\D:\a\b.js` on Windows, so the absolute pattern is used as-is.
+	if (!pattern.includes("*")) return exists(absolute ? pattern : path.join(base, pattern));
+	// The segments that spell the root must not be appended to it a second time:
+	// on Windows the leading `D:` would otherwise become a directory name.
+	const rest = absolute ? pattern.slice(root.length) : pattern;
 	let cur = base;
-	for (const seg of pattern.replace(/\\/g, "/").split("/")) {
+	for (const seg of rest.replace(/\\/g, "/").split("/")) {
 		if (!seg) continue;
 		if (!seg.includes("*")) {
 			cur = path.join(cur, seg);
@@ -751,7 +759,17 @@ export function redactSource(spec) {
 	// unreadable. `@` is allowed only as a whole-segment prefix, so a
 	// `user:pass@host` (which has a colon) and a `user@host` stay out.
 	const segment = "@?[a-z0-9._*+!-]+";
-	const pathLike = new RegExp(`^(${segment})(\\/(${segment}))+$`, "i").test(text) || /^(\.{0,2}\/|\/|~\/)/.test(text);
+	const pathLike =
+		new RegExp(`^(${segment})(\\/(${segment}))+$`, "i").test(text) ||
+		/^(\.{0,2}\/|\/|~\/)/.test(text) ||
+		// Windows: `D:\ext\single.js`, `D:/ext/x.js`, `.\ext\x.js`, `..\x.js`,
+		// and backslash-separated relative paths. Without these every local source
+		// on Windows reached the report as "(unparsable value)", so the reader could
+		// not tell which file a package was missing. The drive form is one letter
+		// plus a separator, which no `user:pass@host` shape can satisfy.
+		/^[a-z]:[\\/]/i.test(text) ||
+		/^\.{1,2}[\\/]/.test(text) ||
+		new RegExp(`^(${segment})(\\\\(${segment}))+$`, "i").test(text);
 	if (pathLike) return scrubCredentials(text);
 	// Anything else is not a source. It may be a credential pasted into the wrong
 	// field — `sk-ant-…` in the packages array — and scrubCredentials only knows

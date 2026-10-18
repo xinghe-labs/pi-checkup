@@ -346,7 +346,11 @@ test("binaries: a correctly linked package command is not shadowed", async () =>
 	const root = tmpRoot();
 	const binDir = path.join(root, "npm", "node_modules", ".bin");
 	fs.mkdirSync(binDir, { recursive: true });
-	const link = path.join(binDir, "checkup-owntool");
+	// npm writes a `foo.cmd` shim next to the extensionless one on Windows, and
+	// `whichAll` resolves commands through PATHEXT there. Creating only the
+	// extensionless file made this a skip on Windows instead of the assertion it
+	// is meant to be.
+	const link = path.join(binDir, process.platform === "win32" ? "checkup-owntool.cmd" : "checkup-owntool");
 	fs.writeFileSync(link, "#!/bin/sh\n");
 	fs.chmodSync(link, 0o755);
 	installPkg(root, "owner", { bin: { "checkup-owntool": "./cli.js" }, pi: { extensions: ["./i.js"] } });
@@ -1793,7 +1797,7 @@ test("network: a cleartext endpoint with a query string is not contacted at all"
 	if (!lan) return t.skip("no non-loopback IPv4 address to act as the other machine");
 	const http = await import("node:http");
 	let hits = 0;
-	const server = http.createServer((req, res) => {
+	const server = http.createServer((_req, res) => {
 		hits += 1;
 		res.writeHead(200);
 		res.end();
@@ -1832,7 +1836,7 @@ test("runtime: a proxy that answers 407 did not forward the request", { skip: ha
 	// 407 is the proxy demanding its own credentials: the target was never
 	// contacted, so "forwarded a request" would be a claim this check cannot make.
 	const http = await import("node:http");
-	const server = http.createServer((req, res) => {
+	const server = http.createServer((_req, res) => {
 		res.writeHead(407);
 		res.end();
 	});
@@ -1862,7 +1866,7 @@ test("network: an HTTP error status is a failure, not just a refused socket", as
 	const root = tmpRoot();
 	writeJson(path.join(root, "settings.json"), { packages: [] });
 	const http = await import("node:http");
-	const server = http.createServer((req, res) => {
+	const server = http.createServer((_req, res) => {
 		res.writeHead(503);
 		res.end();
 	});
