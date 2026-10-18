@@ -210,13 +210,16 @@ export async function run({
 		// so the check has to make the same distinction or its hint names a repair
 		// that then answers "nothing to dedupe".
 		const seen = new Map();
-		const duplicates = new Set();
+		// source -> how many byte-identical repeats beyond the first. A Set of
+		// sources counted distinct sources, so three copies of one entry reported
+		// "1 listed twice" when two entries were redundant.
+		const duplicates = new Map();
 		const mixedShapes = new Set();
 		for (const spec of settings.packages) {
 			const source = sourceOf(spec);
 			if (typeof source !== "string") continue;
 			if (seen.has(source)) {
-				if (JSON.stringify(seen.get(source)) === JSON.stringify(spec)) duplicates.add(source);
+				if (JSON.stringify(seen.get(source)) === JSON.stringify(spec)) duplicates.set(source, (duplicates.get(source) ?? 0) + 1);
 				else mixedShapes.add(source);
 			} else {
 				seen.set(source, spec);
@@ -230,8 +233,7 @@ export async function run({
 		// session's copy is authoritative, and "runtime-unreadable" means the file
 		// is a guess.
 		const canDedupe = settingsSource === "file" && Boolean(settingsFile);
-		const listed = [...duplicates, ...mixedShapes].map(redactSource);
-		if (!listed.length) {
+		if (!duplicates.size && !mixedShapes.size) {
 			// Zero entries compared is not a pass: "none" over an empty list is the
 			// same vacuous green tick the rest of this file avoids. Counted by
 			// comparable entries rather than by the list length, because
@@ -242,11 +244,12 @@ export async function run({
 					: row("duplicates", "duplicate packages", "skip", "no comparable package entries"),
 			);
 		} else {
-			const parts = [];
-			if (duplicates.size) parts.push(`${duplicates.size} listed twice`);
-			if (mixedShapes.size) parts.push(`${mixedShapes.size} listed in two different shapes`);
+			// The count is per source and says how many times the entry actually
+			// appears: "listed twice" for one redundant copy, "listed 3 times" for two.
+			const parts = [...duplicates].map(([source, extra]) => `${redactSource(source)}: listed ${extra === 1 ? "twice" : `${extra + 1} times`}`);
+			for (const source of mixedShapes) parts.push(`${redactSource(source)}: listed in two different shapes`);
 			results.push(
-				row("duplicates", "duplicate packages", "warn", `${listed.join(", ")}: ${parts.join(", ")}`, {
+				row("duplicates", "duplicate packages", "warn", parts.join(", "), {
 					hint:
 						mixedShapes.size && !duplicates.size
 							? "Dedupe leaves entries that differ alone, because they say different things. Keep the one you meant."

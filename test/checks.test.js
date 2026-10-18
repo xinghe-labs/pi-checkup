@@ -2016,3 +2016,21 @@ test("registry: a partly-named registry says how many entries it could not attri
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("config: three copies of one entry are not reported as 'listed twice'", async () => {
+	// `duplicates` was a Set of sources, so it counted distinct sources rather
+	// than redundant entries: three copies of one entry reported "1 listed twice"
+	// when two entries were redundant.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: ["npm:a", "npm:a", "npm:a"] });
+	try {
+		const rows = byId(await config.run(buildContext({ agentDir: root })));
+		assert.equal(rows.duplicates.status, "warn");
+		assert.match(rows.duplicates.detail, /npm:a: listed 3 times/);
+		assert.doesNotMatch(rows.duplicates.detail, /twice/);
+		// The repair still removes both extra copies.
+		assert.equal(rows.duplicates.fix, "dedupe-packages");
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
