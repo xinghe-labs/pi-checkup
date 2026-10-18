@@ -1,0 +1,44 @@
+name: Feature request
+description: A check that is missing, or a row that could say more
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The bar for a new check is high on purpose. A row earns its place
+        only if it can be wrong in a way the user would notice — a check
+        that cannot produce a useful `fail` is a row that trains people to
+        skim the report.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What goes wrong today that pi-checkup does not catch?
+      description: |
+        Describe the failure, not the check. What did you have to work out
+        by hand?
+      placeholder: |
+        A package pinned to `npm:x@1.2.3` was running 1.4.0 for a week.
+        Nothing said so until a function I relied on changed shape.
+    validations:
+      required: true
+
+  - type: textarea
+    id: how
+    attributes:
+      label: How could a check tell the difference?
+      description: |
+        What would it read, and what would it print when it is wrong? If
+        the only honest answer is "it cannot tell", say so — the report
+        has a `skip` status for exactly that, and using it is better than
+        a guess.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do instead right now?
+      description: A shell one-liner, another tool, or nothing at all.
+    validations:
+      required: false

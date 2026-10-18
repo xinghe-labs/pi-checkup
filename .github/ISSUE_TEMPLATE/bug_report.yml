@@ -1,0 +1,97 @@
+name: Bug report
+description: A check reported something wrong, or the report itself is wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A wrong finding is a bug here, not a nuisance: this tool exists to avoid
+        false confidence, so a green tick over something broken and a red mark
+        over something fine are both worth reporting.
+
+        **Before pasting anything:** the report redacts credentials by design.
+        If you see a real key in the output, do not paste it — say that you saw
+        one and follow [SECURITY.md](../blob/main/SECURITY.md) instead.
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen?
+      options:
+        - Inside a Pi session (`/checkup`)
+        - Standalone CLI (`npx pi-checkup`)
+        - Both
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did it say, and what is actually true?
+      description: |
+        Quote the row. "It said X, but the real state is Y" is the useful
+        shape.
+      placeholder: |
+        `! unreachable bins` says `pi-lens` is not on PATH, but `which pi-lens`
+        finds it at /usr/local/bin/pi-lens.
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: The report
+      description: |
+        Paste the output of `npx pi-checkup --json` (outside a session) or
+        `/checkup json` (inside one). The JSON is the same report with the
+        repair metadata stripped, and it is the only form that can be diffed.
+      render: json
+    validations:
+      required: true
+
+  - type: input
+    id: pi-version
+    attributes:
+      label: Pi version
+      description: Output of `pi --version`.
+      placeholder: 1.3.0
+    validations:
+      required: true
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version
+      description: Output of `node --version`. The minimum is v20.
+      placeholder: v22.23.3
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 / Ubuntu 24.04 / macOS 15
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is Pi installed?
+      options:
+        - npm global
+        - The official installer (~/.pi/agent)
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: |
+        A proxy, a container, a dotfiles-symlinked config — the environment
+        shapes what the checks can see.
+    validations:
+      required: false

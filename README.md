@@ -1,5 +1,11 @@
 # pi-checkup
 
+[![npm version](https://img.shields.io/npm/v/pi-checkup.svg)](https://www.npmjs.com/package/pi-checkup)
+[![CI](https://github.com/xinghe-labs/pi-checkup/actions/workflows/ci.yml/badge.svg)](https://github.com/xinghe-labs/pi-checkup/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/pi-checkup.svg)](./LICENSE)
+[![node](https://img.shields.io/node/v/pi-checkup.svg)](https://nodejs.org)
+[![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](./package.json)
+
 **`pi list` tells you what you installed. `pi-checkup` tells you what actually works.**
 
 A health-check extension for [Pi](https://pi.dev). It inspects the *running* session — not just your `settings.json` — and reports the failures that produce no error message anywhere: tools silently shadowed by another package, binaries that resolve to a completely different program, packages that are installed but registered nothing, endpoints that stopped answering.

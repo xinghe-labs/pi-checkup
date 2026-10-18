@@ -510,3 +510,37 @@ test("restore names every backup it rejected when none of them parse", () => {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("a repair refuses to write when the file changed while it was reading", () => {
+	// Two `--fix` processes can read the same file and both write it; the last
+	// one wins with content computed from the older read. There is no lock, so the
+	// guard is a stamp: capture size+mtime before the read, re-check before the
+	// write, refuse when it moved.
+	const dir = tmp();
+	const file = path.join(dir, "settings.json");
+	const original = JSON.stringify({ packages: ["npm:a", "npm:a"] });
+	fs.writeFileSync(file, original);
+	const realStat = fs.statSync;
+	let calls = 0;
+	fs.statSync = (p, ...args) => {
+		const st = realStat(p, ...args);
+		calls++;
+		// First call is the pre-read stamp; everything after claims a newer file.
+		if (calls === 1) return st;
+		return Object.assign(Object.create(Object.getPrototypeOf(st)), st, { size: st.size + 100, mtimeMs: st.mtimeMs + 1000 });
+	};
+	let res;
+	try {
+		res = applyDedupePackages(file);
+	} finally {
+		fs.statSync = realStat;
+	}
+	try {
+		assert.equal(res.ok, false, JSON.stringify(res));
+		assert.match(res.message, /changed while checkup was running/);
+		assert.equal(fs.readFileSync(file, "utf8"), original, "the target must be untouched");
+		assert.equal(fs.readdirSync(dir).length, 1, "no backup should be written for a refused repair");
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});

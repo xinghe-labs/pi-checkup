@@ -2034,3 +2034,45 @@ test("config: three copies of one entry are not reported as 'listed twice'", asy
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("network: a provider with a credential but no baseUrl is named, not dropped", async () => {
+	// It is not an endpoint to probe — Pi may have a built-in default — but saying
+	// only "1 endpoint(s) reachable" left the reader unable to tell whether the
+	// other providers were fine or had never been looked at.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { a: { apiKey: "k" }, b: { apiKey: "k" } } });
+	try {
+		const rows = byId(await network.run(buildContext({ agentDir: root, offline: true })));
+		assert.equal(rows.providers.status, "skip");
+		assert.match(rows.providers.detail, /2 provider\(s\) declare no baseUrl and were not probed: a, b/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("network: a $VAR in baseUrl is named as literal, because Pi does not interpolate it", async () => {
+	// `new URL("https://${HOST}/v1")` succeeds, so the probe asked DNS for a host
+	// literally named `${HOST}` and reported "does not resolve" — true and useless.
+	// Pi expands apiKey and header values only.
+	const root = tmpRoot();
+	writeJson(path.join(root, "settings.json"), { packages: [] });
+	writeJson(path.join(root, "models.json"), { providers: { p: { baseUrl: "https://${HOST}/v1" } } });
+	try {
+		const rows = byId(await network.run(buildContext({ agentDir: root, offline: true })));
+		assert.equal(rows["baseUrl-shape"].status, "warn");
+		assert.match(rows["baseUrl-shape"].detail, /Pi interpolates only apiKey and header values/);
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+	// An OData query parameter is not an environment reference.
+	const root2 = tmpRoot();
+	writeJson(path.join(root2, "settings.json"), { packages: [] });
+	writeJson(path.join(root2, "models.json"), { providers: { p: { baseUrl: "https://h.example/v1?$filter=x" } } });
+	try {
+		const rows = byId(await network.run(buildContext({ agentDir: root2, offline: true })));
+		assert.equal(rows["baseUrl-shape"], undefined);
+	} finally {
+		fs.rmSync(root2, { recursive: true, force: true });
+	}
+});

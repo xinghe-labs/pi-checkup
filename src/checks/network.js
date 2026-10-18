@@ -34,7 +34,7 @@ function hasCredentialHeader(headers) {
 	);
 }
 
-export async function run({ offline = false, agentDir: root, modelsFile, env = process.env, hasRuntime = false }) {
+export async function run({ offline = false, modelsFile, env = process.env, hasRuntime = false }) {
 	const results = [];
 	const models = readJson(modelsFile);
 	if (!models.ok) {
@@ -91,6 +91,11 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 	// hole one level up.
 	const shape = [];
 	const queryWithheld = [];
+	// Providers that declare a credential but no `baseUrl` are not endpoints to
+	// probe — Pi may have a built-in default for them — but they were dropped in
+	// silence, so a user with five providers and one baseUrl read "1 endpoint(s)
+	// reachable" and had no way to tell the other four were never looked at.
+	const noBaseUrl = [];
 	const proxy = proxyFromEnv(env);
 	for (const [name, provider] of Object.entries(providers)) {
 		if (!provider || typeof provider !== "object" || Array.isArray(provider)) {
@@ -98,9 +103,22 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			continue;
 		}
 		const baseUrl = provider.baseUrl ?? provider.base_url;
-		if (baseUrl === undefined || baseUrl === null || baseUrl === "") continue;
+		if (baseUrl === undefined || baseUrl === null || baseUrl === "") {
+			noBaseUrl.push(name);
+			continue;
+		}
 		if (typeof baseUrl !== "string") {
 			shape.push(`${name} (${Array.isArray(baseUrl) ? "array" : typeof baseUrl}) — baseUrl is not a string`);
+			continue;
+		}
+		// Pi interpolates `apiKey` and header values, not `baseUrl`. A `${HOST}` here
+		// is a literal string, and `new URL` accepts it — so the probe would ask DNS
+		// for a host literally named `${HOST}`, report "does not resolve", and leave
+		// the reader to work out that the interpolation they expected never happens.
+		// Only the part before the query is examined: `?$filter=x` is OData, not an
+		// environment reference, and flagging it was noise.
+		if (/\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*/.test(baseUrl.split("?")[0])) {
+			shape.push(`${name}: baseUrl contains an environment reference, but Pi interpolates only apiKey and header values — this is the literal string`);
 			continue;
 		}
 		let url;
@@ -208,6 +226,12 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 
 	// Built once so offline mode can emit it too: whether a baseUrl is even a
 	// string is a property of the config, not of the probe.
+	// Named, not silently dropped: a provider with a credential but no `baseUrl`
+	// is not an endpoint to probe, and Pi may have a built-in default for it — but
+	// saying only "1 endpoint(s) reachable" left the reader unable to tell whether
+	// the other four providers were fine or were never looked at.
+	const noBaseUrlNote = noBaseUrl.length ? `; ${noBaseUrl.length} provider(s) declare no baseUrl and were not probed: ${truncateList(noBaseUrl, 4)}` : "";
+
 	const shapeRow = shapeNotes.length
 		? {
 				group,
@@ -215,7 +239,8 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 				title: "baseUrl shape",
 				status: "warn",
 				detail: `${shapeNotes.join("; ")} — not probed`,
-				hint: "baseUrl has to be an absolute http(s) URL as a quoted string, like \"https://api.example.com/v1\".",
+				hint: "baseUrl has to be an absolute http(s) URL as a quoted string, like \"https://api.example.com/v1\"."
+					+ " An environment reference there is not expanded: Pi interpolates only apiKey and header values.",
 			}
 		: null;
 
@@ -228,7 +253,7 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 				status: "skip",
 				detail: shapeNotes.length
 					? `offline mode — ${planned.length} endpoint(s) not probed; ${shapeNotes.join("; ")}`
-					: `offline mode — ${planned.length} configured endpoint(s) not probed`,
+					: `offline mode — ${planned.length} configured endpoint(s) not probed${noBaseUrlNote}`,
 				hint: "Re-run without --offline to test reachability.",
 			},
 			// Emitted as a skip rather than omitted: a row that vanishes in offline
@@ -293,7 +318,9 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			status: "skip",
 			detail: shapeNotes.length
 				? `no provider with a usable baseUrl — ${shapeNotes.join("; ")}`
-				: "no provider with a baseUrl in models.json",
+				: noBaseUrl.length
+					? `no provider with a baseUrl in models.json (${truncateList(noBaseUrl, 4)} declare${noBaseUrl.length === 1 ? "s" : ""} none)`
+					: "no provider with a baseUrl in models.json",
 		});
 	} else if (!unhealthy.length && unprobed.length) {
 		// Nothing was sent, so there is nothing to call healthy — but when some
@@ -306,13 +333,13 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			status: "skip",
 			detail: `${answered ? `${answered} endpoint(s) reachable; ` : ""}${unprobed.map((o) => o.detail).join("; ")}`,
 		});
-	} else if (!unhealthy.length) {
+		} else if (!unhealthy.length) {
 		results.push({
 			group,
 			id: "providers",
 			title: "providers",
-		status: "ok",
-			detail: `${probed} endpoint(s) reachable`,
+			status: "ok",
+			detail: `${probed} endpoint(s) reachable${noBaseUrlNote}`,
 		});
 	} else {
 		results.push({
@@ -320,7 +347,7 @@ export async function run({ offline = false, agentDir: root, modelsFile, env = p
 			id: "providers",
 			title: "providers",
 			status: unhealthy.some((o) => o.status === "fail") ? "fail" : "warn",
-			detail: `${unhealthy.length} of ${probed} unhealthy: ${truncateList(unhealthy.map((o) => o.name), 6)}`,
+			detail: `${unhealthy.length} of ${probed} unhealthy: ${truncateList(unhealthy.map((o) => o.name), 6)}${noBaseUrlNote}`,
 			// An outcome that knows why it failed brings its own advice; the generic
 			// sentence is only for the ones that do not (a refused connection, a
 			// timeout) and for the ones that sit next to them.

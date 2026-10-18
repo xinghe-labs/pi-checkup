@@ -170,11 +170,35 @@ function unreadable(target, parsed) {
 	return { ok: false, message: `${name} could not be read: ${parsed.error}` };
 }
 
+/**
+ * Identity of a file at one moment: size plus mtime, or null when it is gone.
+ *
+ * Two `--fix` processes that read the same file and then both write it leave
+ * whichever finished last as the content, computed from the older of the two
+ * reads. There is no lock, and a lock file brings its own problems (stale locks,
+ * a crash leaving one behind). This is the cheaper guard: capture the identity
+ * before reading, re-check it immediately before the write, and refuse when the
+ * file moved underneath.
+ */
+function fileStamp(target) {
+	try {
+		const st = fs.statSync(target);
+		return `${st.size}:${st.mtimeMs}`;
+	} catch {
+		return null;
+	}
+}
+
+function changedSince(target, stamp) {
+	return fileStamp(target) !== stamp;
+}
+
 export function applyRestoreConfig(target) {
 	// Re-read before overwriting. The decision to restore was made when the check
 	// ran, and in-session the confirmation prompt can sit open indefinitely: if the
 	// user repaired the file by hand in that window, writing the older backup over
 	// it would undo the fix.
+	const before = fileStamp(target);
 	const current = readJson(target);
 	if (current.ok) return { ok: false, message: `${path.basename(target)} is valid JSON again — nothing to restore` };
 	const candidates = backupsNewestFirst(target);
@@ -199,6 +223,9 @@ export function applyRestoreConfig(target) {
 		return { ok: false, message: `nothing to restore from: ${rejected.join("; ")}` };
 	}
 	const skipped = candidates.indexOf(backup);
+	if (changedSince(target, before)) {
+		return { ok: false, message: `${path.basename(target)} changed while checkup was running — not restoring over it. Re-run to see the current state.` };
+	}
 	const aside = copyBackup(target, "broken");
 	// The backup is valid JSON (checked above), so restoring its bytes verbatim
 	// keeps any formatting the user had. If the write itself fails after the
@@ -233,6 +260,7 @@ export function applyRestoreConfig(target) {
  * recoverable, but a repair that needs its backup is not a repair.
  */
 export function applyDedupePackages(target, options = {}) {
+	const before = fileStamp(target);
 	const settings = readJson(target);
 	if (!settings.ok) return unreadable(target, settings);
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to dedupe" };
@@ -249,6 +277,9 @@ export function applyDedupePackages(target, options = {}) {
 	// between — a second read would prove nothing. Backing up before the plan was
 	// known left a stray `.checkup-bak-*` beside a healthy config on runs that
 	// repaired nothing.
+	if (changedSince(target, before)) {
+		return { ok: false, message: `${path.basename(target)} changed while checkup was running — not writing over it. Re-run to see the current state.` };
+	}
 	const backup = backupFor(target, options.backups);
 	settings.data.packages = plan.kept;
 	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
@@ -298,6 +329,7 @@ export function applyPruneMissingPackages(target, root, options = {}) {
 	// Not defaulted: a wrong root makes every entry look missing, and this repair
 	// deletes what it cannot resolve.
 	if (!root) throw new Error("applyPruneMissingPackages needs the agent directory to resolve packages against");
+	const before = fileStamp(target);
 	const settings = readJson(target);
 	if (!settings.ok) return unreadable(target, settings);
 	if (!Array.isArray(settings.data?.packages)) return { ok: false, message: "no packages array to prune" };
@@ -324,6 +356,9 @@ export function applyPruneMissingPackages(target, root, options = {}) {
 
 	// Same reasoning as dedupe: the read above is post-prompt, and the rest of
 	// this function is synchronous.
+	if (changedSince(target, before)) {
+		return { ok: false, message: `${path.basename(target)} changed while checkup was running — not writing over it. Re-run to see the current state.` };
+	}
 	const backup = backupFor(target, options.backups);
 	settings.data.packages = plan.kept;
 	writeAtomic(target, `${JSON.stringify(settings.data, null, 2)}\n`);
