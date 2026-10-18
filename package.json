@@ -1,6 +1,6 @@
 {
   "name": "pi-checkup",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Health checks for your Pi setup: tool/command conflicts, broken packages, shadowed binaries, dead endpoints.",
   "type": "module",
   "license": "MIT",
